@@ -6,7 +6,8 @@ export const SCENES = {
     title: "Scene 1",
     spec: "Jack is planting the seeds.",
     detail:
-      "Jack kneels in the dirt of a small, poor cottage garden in the early morning. " +
+      "Medium shot: Jack kneels in the dirt of a small, poor cottage garden in the early morning, " +
+      "facing the viewer so his face is large and clear. " +
       "He is pressing a few magic beans into a freshly dug hole in the soil with his hand. " +
       "A small cloth pouch of beans is in his other hand. A simple wooden cottage and a " +
       "fence are behind him. No beanstalk has grown yet: the ground is bare soil.",
@@ -15,10 +16,11 @@ export const SCENES = {
     title: "Scene 2",
     spec: "Jack is climbing the beanstalk.",
     detail:
-      "Jack is partway up an enormous, thick green beanstalk that rises into the clouds. " +
-      "He grips the stalk with both hands and has one foot on a giant leaf, mid-climb. " +
-      "The cottage is tiny far below him and clouds swirl above. The beanstalk is the " +
-      "central element and clearly visible.",
+      "Jack is climbing an enormous, thick green beanstalk that rises into the clouds. " +
+      "Close-up framing from slightly above: Jack is in the foreground, filling much of the picture, " +
+      "gripping the thick stalk with both hands with one foot on a giant leaf, and looking toward the viewer " +
+      "so his face is large and clear. Far below him the cottage is tiny and clouds surround the stalk, " +
+      "making it obvious he is high up on the beanstalk.",
   },
 };
 
@@ -31,9 +33,9 @@ const STYLES = {
 };
 
 const EXAGGERATION = {
-  low: "Keep proportions realistic; only a light cartoon stylization.",
-  medium: "Moderate cartoon stylization: slightly larger head and eyes.",
-  high: "Strong caricature: big head, exaggerated expression, but still the same person.",
+  low: "Light cartoon stylization with realistic, natural proportions.",
+  medium: "Moderate cartoon stylization with natural facial proportions.",
+  high: "Playful, expressive cartoon stylization, but the face keeps its real proportions and stays the same person.",
 };
 
 const OUTLINE = {
@@ -67,6 +69,7 @@ export function buildPrompt(sceneId, settings = {}) {
     "Keep their face shape, skin tone, hair color, hairstyle, eye shape, eyebrows, nose, and any glasses, facial hair, or distinctive features.",
     "Keep their apparent age and gender presentation. Do not replace them with a generic character.",
     "Their face should be visible and facing roughly toward the viewer, large enough to recognize.",
+    "The face must be well-formed and undistorted: symmetrical, natural proportions, both eyes aligned and the same size, no stretching, melting, or warping.",
     "Dress them as Jack: simple peasant clothes (tunic, trousers, boots).",
     "",
     `SCENE: ${scene.spec} ${scene.detail}`,

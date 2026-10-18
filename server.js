@@ -13,6 +13,9 @@ const API_KEY = process.env.OPENAI_API_KEY;
 // Cheap by default. You can change these in Render's environment settings without touching code.
 const MODEL = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1-mini";
 const QUALITY = process.env.OPENAI_IMAGE_QUALITY || "low"; // low | medium | high
+// Optional: "high" keeps faces much closer to the photo. Not supported by gpt-image-1-mini;
+// use it with gpt-image-1.5 or gpt-image-1.
+const INPUT_FIDELITY = process.env.OPENAI_INPUT_FIDELITY || null;
 
 const openai = API_KEY ? new OpenAI({ apiKey: API_KEY }) : null;
 
@@ -33,7 +36,7 @@ app.get("/api/scenes", (_req, res) => {
 });
 
 app.get("/api/status", (_req, res) => {
-  res.json({ keyConfigured: Boolean(API_KEY), model: MODEL, quality: QUALITY });
+  res.json({ keyConfigured: Boolean(API_KEY), model: MODEL, quality: QUALITY, inputFidelity: INPUT_FIDELITY });
 });
 
 // One request in = exactly one API call out. No loops, no automatic retries.
@@ -73,6 +76,7 @@ app.post("/api/generate", upload.single("photo"), async (req, res) => {
       size: "1024x1024",
       quality: QUALITY,
       n: 1,
+      ...(INPUT_FIDELITY ? { input_fidelity: INPUT_FIDELITY } : {}),
     });
 
     const b64 = result.data?.[0]?.b64_json;
