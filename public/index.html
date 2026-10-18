@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Beanstalk Me</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>Beanstalk Me</h1>
+    <p>Upload a photo, pick a cartoon style, and become Jack.</p>
+  </header>
+
+  <div id="keyWarning" class="warning" hidden>
+    The server doesn't have an API key yet, so images can't be generated.
+  </div>
+
+  <main>
+    <section class="panel">
+      <h2>1. Your photo</h2>
+      <label class="drop" id="drop">
+        <input type="file" id="photo" accept="image/jpeg,image/png,image/webp" />
+        <img id="preview" alt="" hidden />
+        <span id="dropText">Click to choose a photo<br /><small>A clear, front-facing photo works best</small></span>
+      </label>
+
+      <h2>2. Cartoon settings</h2>
+      <div class="settings">
+        <label>Style
+          <select id="style">
+            <option value="storybook">Storybook</option>
+            <option value="3d">3D animated</option>
+            <option value="comic">Comic book</option>
+            <option value="flat">Flat vector</option>
+            <option value="anime">Anime</option>
+          </select>
+        </label>
+        <label>Exaggeration
+          <select id="exaggeration">
+            <option value="low">Low</option>
+            <option value="medium" selected>Medium</option>
+            <option value="high">High</option>
+          </select>
+        </label>
+        <label>Outlines
+          <select id="outline">
+            <option value="none">None</option>
+            <option value="thin" selected>Thin</option>
+            <option value="thick">Thick</option>
+          </select>
+        </label>
+        <label>Colors
+          <select id="palette">
+            <option value="bright">Bright</option>
+            <option value="pastel">Pastel</option>
+            <option value="earthy">Earthy</option>
+            <option value="muted">Muted</option>
+          </select>
+        </label>
+      </div>
+    </section>
+
+    <section class="scenes" id="scenes">
+      <!-- filled in by app.js -->
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+{
+  "name": "beanstalk-cartoon",
+  "version": "1.0.0",
+  "description": "Upload a photo, cartoonify it, and place yourself into scenes from Jack and the Beanstalk.",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --env-file=.env server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "multer": "^1.4.5-lts.1",
+    "openai": "^5.0.0"
+  }
+}
