@@ -11,7 +11,7 @@
 <body>
   <header>
     <h1>Beanstalk Me</h1>
-    <p>Upload a photo, pick a cartoon style, and become Jack.</p>
+    <p>Upload or take a photo, pick a cartoon style, and become Jack.</p>
   </header>
 
   <div id="keyWarning" class="warning" hidden>
@@ -24,8 +24,23 @@
       <label class="drop" id="drop">
         <input type="file" id="photo" accept="image/jpeg,image/png,image/webp" />
         <img id="preview" alt="" hidden />
-        <span id="dropText">Click to choose a photo<br /><small>A clear, front-facing photo works best</small></span>
+        <span id="dropText">Click to upload a photo<br /><small>A clear, front-facing photo works best</small></span>
       </label>
+
+      <div class="camera" id="camera" hidden>
+        <video id="video" autoplay playsinline muted></video>
+        <div class="camera-buttons">
+          <button type="button" id="snap">Capture</button>
+          <button type="button" id="cancelCam" class="secondary">Cancel</button>
+        </div>
+      </div>
+
+      <div class="photo-buttons">
+        <button type="button" id="takePhoto" class="secondary">📷 Take a photo</button>
+        <!-- Fallback for browsers without camera access in the page: opens the phone camera directly -->
+        <input type="file" id="cameraFallback" accept="image/*" capture="user" hidden />
+      </div>
+      <p class="error" id="cameraError"></p>
 
       <h2>2. Cartoon settings</h2>
       <div class="settings">
