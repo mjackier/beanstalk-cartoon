@@ -1,0 +1,116 @@
+main.book {
+  display: block;
+  max-width: 1000px;
+}
+.crumbs { margin-top: 8px; font-size: 0.9rem; }
+.crumbs a { color: var(--leaf); }
+
+.step {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+.step-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.step-head h2 { margin: 0; }
+.num {
+  display: grid;
+  place-items: center;
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  background: var(--leaf);
+  color: #fff;
+  font-weight: 600;
+  flex: none;
+}
+.hint { color: var(--muted); font-size: 0.92rem; margin: 0 0 12px; }
+
+.two-col { display: grid; grid-template-columns: 300px 1fr; gap: 20px; align-items: start; }
+@media (max-width: 720px) { .two-col { grid-template-columns: 1fr; } }
+
+.about { display: grid; gap: 12px; }
+.about label { display: grid; gap: 4px; font-weight: 500; font-size: 0.92rem; }
+.about input, .about textarea {
+  font: inherit;
+  padding: 9px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink);
+  width: 100%;
+}
+.req { color: #c0392b; }
+
+.ref-frame {
+  aspect-ratio: 2 / 3;
+  border-radius: 12px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  color: var(--muted);
+  text-align: center;
+  padding: 12px;
+}
+.ref-frame img { width: 100%; height: 100%; object-fit: cover; }
+.ref-frame:has(img) { padding: 0; }
+.ref-side { display: grid; gap: 12px; align-content: start; }
+.ref-side p { margin: 0; }
+
+.pages { display: grid; gap: 22px; }
+.page-card { display: grid; gap: 10px; }
+.page-card h3 { font-family: Fraunces, Georgia, serif; margin: 0; font-size: 1.05rem; }
+
+.page-frame {
+  position: relative;
+  aspect-ratio: 3 / 2;
+  border-radius: 12px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+}
+.page-frame img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+
+/* Preview of where the PDF will draw the story text */
+.text-zone {
+  position: absolute;
+  left: 0; right: 0;
+  display: grid;
+  place-items: center;
+  padding: 0 8%;
+  pointer-events: none;
+}
+.text-zone.top { top: 0; }
+.text-zone.bottom { bottom: 0; }
+.text-zone span {
+  font-family: Georgia, "Times New Roman", serif;
+  font-weight: 700;
+  font-size: clamp(0.9rem, 2.6vw, 1.5rem);
+  text-align: center;
+  padding: 0.5em 1em;
+  border-radius: 10px;
+}
+.text-zone.light span { background: rgba(255, 250, 240, 0.72); color: #2b2318; }
+.text-zone.dark span { background: rgba(10, 12, 30, 0.55); color: #fff6e0; }
+.page-frame:not(:has(img)) .text-zone span { outline: 2px dashed var(--line); }
+
+.page-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.fix-row { display: flex; gap: 8px; }
+.fix-row input {
+  flex: 1;
+  font: inherit;
+  padding: 9px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink);
+  min-width: 0;
+}
+.busy-note { color: var(--muted); font-size: 0.9rem; align-self: center; }
+
+#downloadPdf { width: 100%; padding: 14px; font-size: 1.05rem; }

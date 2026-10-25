@@ -171,3 +171,6 @@ details pre { white-space: pre-wrap; background: var(--bg); padding: 10px; borde
   margin: 0 auto 8px;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+.switch { margin: 8px 0 0; }
+.switch a { color: var(--leaf); font-weight: 600; }
