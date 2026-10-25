@@ -63,9 +63,11 @@ export const PAGES = [
       "Jack holds Milky-White's rope in one hand; the cow stands right beside him.",
     cast: ["oldMan", "cow"],
     lighting: "Bright, clear midday light; fresh greens and warm browns.",
-    textArea: { position: "top", size: 0.28, tone: "light" },
+    textArea: { position: "top", size: 0.25, tone: "light" },
     composition:
-      "Keep the top quarter of the picture as open, simple pale-blue sky with only a few soft clouds: no birds, trees, or details there, so story text can sit on it.",
+      "Wide shot from a slightly higher, farther-back camera: Jack, the old man, and the cow are shown full-body in the middle and lower part of the picture, " +
+      "and the tops of ALL their heads and hats are below the top third of the picture. " +
+      "The top third is only open, simple pale-blue sky with a few soft clouds: no heads, hats, faces, birds, trees, or details there, so story text can sit on it.",
   },
   {
     id: "out-the-window",
@@ -74,10 +76,12 @@ export const PAGES = [
     title: "Out the window",
     text: "Beans! she cried. And out the window they went.",
     jack:
-      "Jack stands in the open cottage doorway, watching the beans fly, surprised and upset. His face is turned toward the viewer and lit by warm light from inside, so it is clearly recognizable.",
+      "Jack stands in the open cottage doorway, surprised and upset. His head is tilted and turned toward the flying beans and his eyes are clearly looking AT the beans, " +
+      "following them as they fall. Show his face in three-quarter view, lit by warm light from the doorway, so it is clearly recognizable while he watches the beans.",
     scene:
-      "The outside of the cottage at dusk. Jack's mother leans out of a window, angrily flinging the beans out; " +
-      "the five colored beans scatter through the air and fall into the dark garden below.",
+      "The outside of the cottage at dusk. Jack's mother leans out of a window next to the doorway, angrily flinging the beans out; " +
+      "the five colored beans arc through the air in front of Jack, between the window and the garden, and fall into the dark garden below. " +
+      "Jack's line of sight and the beans are clearly connected: he is watching them land.",
     cast: ["mother"],
     lighting:
       "Dusk: a noticeably darker, cooler palette than daytime, with deep blues and purples, lit by warm orange light from the window and doorway.",

@@ -284,9 +284,7 @@ function toJpeg(dataUrl, quality = 0.9) {
 }
 
 function drawStoryText(doc, page) {
-  const { position, size, tone } = page.textArea;
-  const zoneH = PAGE_H * size;
-  const zoneTop = position === "top" ? 0 : PAGE_H - zoneH;
+  const { position, tone } = page.textArea;
 
   doc.setFont("times", "bold");
   let fontSize = 30;
@@ -302,7 +300,9 @@ function drawStoryText(doc, page) {
   const panelW = Math.min(PAGE_W - 80, Math.max(...lines.map((l) => doc.getTextWidth(l))) + 60);
   const panelH = textH + 26;
   const panelX = (PAGE_W - panelW) / 2;
-  const panelY = zoneTop + (zoneH - panelH) / 2;
+  // Hug the page edge (top or bottom) instead of centering, so the panel covers as little art as possible.
+  const EDGE = 18;
+  const panelY = position === "top" ? EDGE : PAGE_H - EDGE - panelH;
 
   // Soft panel behind the text so it reads on any art.
   doc.saveGraphicsState();
