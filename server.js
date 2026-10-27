@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import express from "express";
 import multer from "multer";
 import OpenAI, { toFile } from "openai";
@@ -5,6 +6,8 @@ import { buildPrompt, SCENES } from "./prompt.js";
 import { STYLE, READY_PAGES, getPage, buildCharacterPrompt, buildPagePrompt, buildFixPrompt } from "./story.js";
 
 const app = express();
+// Render sits behind a proxy; trust it so req.ip is the real visitor, not the proxy.
+app.set("trust proxy", 1);
 const PORT = process.env.PORT || 3000;
 
 // The key is read ONLY from the environment. It is never written in code.
@@ -33,6 +36,46 @@ const upload = multer({
 
 app.use(express.static("public"));
 
+// ---------------------------------------------------------------------
+// Password for anything that costs money (image generation).
+// The password lives ONLY in the GENERATE_PASSWORD environment variable,
+// never in the code: this repo is public.
+// ---------------------------------------------------------------------
+const GENERATE_PASSWORD = process.env.GENERATE_PASSWORD || "";
+const failedAttempts = new Map(); // ip -> { count, since }
+const MAX_FAILS = 10;
+const FAIL_WINDOW_MS = 15 * 60 * 1000;
+
+function passwordMatches(given) {
+  const a = Buffer.from(String(given));
+  const b = Buffer.from(GENERATE_PASSWORD);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function requirePassword(req, res, next) {
+  if (!GENERATE_PASSWORD) return next(); // not configured: generation is open
+
+  const ip = req.ip;
+  const now = Date.now();
+  const record = failedAttempts.get(ip);
+  if (record && now - record.since > FAIL_WINDOW_MS) failedAttempts.delete(ip);
+  if ((failedAttempts.get(ip)?.count || 0) >= MAX_FAILS) {
+    return res.status(429).json({ error: "Too many wrong passwords. Try again in 15 minutes.", needPassword: true });
+  }
+
+  if (passwordMatches(req.get("x-app-password") || "")) {
+    failedAttempts.delete(ip);
+    return next();
+  }
+  const r = failedAttempts.get(ip) || { count: 0, since: now };
+  r.count += 1;
+  failedAttempts.set(ip, r);
+  res.status(401).json({ error: "Wrong or missing password.", needPassword: true });
+}
+
+// Lets the page check a password without generating (and spending) anything.
+app.post("/api/check-password", requirePassword, (_req, res) => res.json({ ok: true }));
+
 app.get("/api/scenes", (_req, res) => {
   res.json(SCENES);
 });
@@ -44,11 +87,12 @@ app.get("/api/status", (_req, res) => {
     model: MODEL,
     quality: QUALITY,
     inputFidelity: INPUT_FIDELITY,
+    passwordRequired: Boolean(GENERATE_PASSWORD),
   });
 });
 
 // One request in = exactly one API call out. No loops, no automatic retries.
-app.post("/api/generate", upload.single("photo"), async (req, res) => {
+app.post("/api/generate", requirePassword, upload.single("photo"), async (req, res) => {
   try {
     if (!openai) {
       return res.status(503).json({
@@ -167,7 +211,7 @@ app.get("/api/book", (_req, res) => {
 });
 
 // Step 1: uploaded photo -> ONE character reference image of Jack.
-app.post("/api/book/character", bookUpload, async (req, res) => {
+app.post("/api/book/character", requirePassword, bookUpload, async (req, res) => {
   try {
     if (!requireKey(res)) return;
     const photo = req.files?.photo?.[0];
@@ -181,7 +225,7 @@ app.post("/api/book/character", bookUpload, async (req, res) => {
 });
 
 // Step 2: reference image + page prompt -> one page.
-app.post("/api/book/page", bookUpload, async (req, res) => {
+app.post("/api/book/page", requirePassword, bookUpload, async (req, res) => {
   try {
     if (!requireKey(res)) return;
     const reference = req.files?.reference?.[0];
@@ -197,7 +241,7 @@ app.post("/api/book/page", bookUpload, async (req, res) => {
 });
 
 // Step 3 (optional): edit an existing page ("same scene, one thing changed").
-app.post("/api/book/fix", bookUpload, async (req, res) => {
+app.post("/api/book/fix", requirePassword, bookUpload, async (req, res) => {
   try {
     if (!requireKey(res)) return;
     const pageImage = req.files?.page?.[0];

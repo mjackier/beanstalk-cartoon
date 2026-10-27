@@ -87,14 +87,17 @@ async function dataUrlToBlob(dataUrl) {
 }
 
 async function post(url, form) {
-  const res = await fetch(url, { method: "POST", body: form });
+  const res = await fetch(url, { method: "POST", body: form, headers: window.appAuth.headers() });
   let data;
   try {
     data = await res.json();
   } catch {
     throw new Error(`Server error (${res.status}).`);
   }
-  if (!res.ok) throw new Error(data.error || "Generation failed.");
+  if (!res.ok) {
+    window.appAuth.handleError(data);
+    throw new Error(data.error || "Generation failed.");
+  }
   return data;
 }
 

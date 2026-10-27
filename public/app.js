@@ -114,9 +114,12 @@ async function generate(sceneId, card) {
   for (const [k, v] of Object.entries(getSettings())) form.append(k, v);
 
   try {
-    const res = await fetch("/api/generate", { method: "POST", body: form });
+    const res = await fetch("/api/generate", { method: "POST", body: form, headers: window.appAuth.headers() });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Generation failed.");
+    if (!res.ok) {
+      window.appAuth.handleError(data);
+      throw new Error(data.error || "Generation failed.");
+    }
 
     frame.innerHTML = "";
     const img = document.createElement("img");

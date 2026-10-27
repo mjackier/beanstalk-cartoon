@@ -32,6 +32,7 @@ Two apps in one Express server:
 | `OPENAI_IMAGE_MODEL` | e.g. `gpt-image-1.5` (default `gpt-image-1-mini`) |
 | `OPENAI_INPUT_FIDELITY` | `high` keeps faces closer to the reference (not supported by the mini model) |
 | `OPENAI_IMAGE_QUALITY` | `low` / `medium` / `high` (default `low`) |
+| `GENERATE_PASSWORD` | If set, generating images requires this password (checked on the server). Viewing the site stays open. Never put the password in code; this repo is public. |
 | `MOCK_IMAGES` | `1` = don't call OpenAI; echo the input image back. For testing the pipeline and PDF for free. |
 
 ## Run locally
