@@ -4,27 +4,26 @@ import multer from "multer";
 import OpenAI, { toFile } from "openai";
 import { buildPrompt, SCENES } from "./prompt.js";
 import { STYLE, READY_PAGES, getPage, buildCharacterPrompt, buildPagePrompt, buildFixPrompt } from "./story.js";
+import { logger, requestLogger } from "./lib/log.js";
+import { createStore } from "./lib/store.js";
+import { registerAuth, requireUser, loginConfigured } from "./lib/auth.js";
 
 const app = express();
-// Render sits behind a proxy; trust it so req.ip is the real visitor, not the proxy.
+// Render sits behind a proxy; trust it so req.ip / req.protocol are the visitor's.
 app.set("trust proxy", 1);
 const PORT = process.env.PORT || 3000;
 
 // The key is read ONLY from the environment. It is never written in code.
-// Locally: put it in a .env file (git-ignored). On Render: set it in Environment settings.
 const API_KEY = process.env.OPENAI_API_KEY;
-
-// Cheap by default. You can change these in Render's environment settings without touching code.
 const MODEL = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1-mini";
 const QUALITY = process.env.OPENAI_IMAGE_QUALITY || "low"; // low | medium | high
-// Optional: "high" keeps faces much closer to the photo. Not supported by gpt-image-1-mini;
-// use it with gpt-image-1.5 or gpt-image-1.
-const INPUT_FIDELITY = process.env.OPENAI_INPUT_FIDELITY || null;
+const INPUT_FIDELITY = process.env.OPENAI_INPUT_FIDELITY || null; // "high" keeps faces closer (not on mini)
+// MOCK_IMAGES=1: don't call OpenAI, echo the input image back. Free testing of the whole pipeline.
+const MOCK = process.env.MOCK_IMAGES === "1";
 
 const openai = API_KEY ? new OpenAI({ apiKey: API_KEY }) : null;
 
-// Keep uploads in memory (never saved to disk). Limit to 15 MB images
-// (generated pages sent back for editing are large PNGs).
+// Uploads stay in memory (never written to disk).
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 15 * 1024 * 1024 },
@@ -34,12 +33,13 @@ const upload = multer({
   },
 });
 
+app.use(requestLogger);
 app.use(express.static("public"));
+app.use(express.json({ limit: "100kb" }));
 
 // ---------------------------------------------------------------------
 // Password for anything that costs money (image generation).
-// The password lives ONLY in the GENERATE_PASSWORD environment variable,
-// never in the code: this repo is public.
+// Lives ONLY in the GENERATE_PASSWORD environment variable (the repo is public).
 // ---------------------------------------------------------------------
 const GENERATE_PASSWORD = process.env.GENERATE_PASSWORD || "";
 const failedAttempts = new Map(); // ip -> { count, since }
@@ -62,7 +62,6 @@ function requirePassword(req, res, next) {
   if ((failedAttempts.get(ip)?.count || 0) >= MAX_FAILS) {
     return res.status(429).json({ error: "Too many wrong passwords. Try again in 15 minutes.", needPassword: true });
   }
-
   if (passwordMatches(req.get("x-app-password") || "")) {
     failedAttempts.delete(ip);
     return next();
@@ -70,104 +69,38 @@ function requirePassword(req, res, next) {
   const r = failedAttempts.get(ip) || { count: 0, since: now };
   r.count += 1;
   failedAttempts.set(ip, r);
+  logger.warn("wrong generate password", { ip, attempts: r.count });
   res.status(401).json({ error: "Wrong or missing password.", needPassword: true });
 }
 
-// Lets the page check a password without generating (and spending) anything.
 app.post("/api/check-password", requirePassword, (_req, res) => res.json({ ok: true }));
 
-app.get("/api/scenes", (_req, res) => {
-  res.json(SCENES);
-});
-
-app.get("/api/status", (_req, res) => {
-  res.json({
-    keyConfigured: Boolean(API_KEY),
-    mock: process.env.MOCK_IMAGES === "1",
-    model: MODEL,
-    quality: QUALITY,
-    inputFidelity: INPUT_FIDELITY,
-    passwordRequired: Boolean(GENERATE_PASSWORD),
-  });
-});
-
-// One request in = exactly one API call out. No loops, no automatic retries.
-app.post("/api/generate", requirePassword, upload.single("photo"), async (req, res) => {
-  try {
-    if (!openai) {
-      return res.status(503).json({
-        error: "The server has no API key yet. Set OPENAI_API_KEY in the environment.",
-      });
-    }
-    if (!req.file) {
-      return res.status(400).json({ error: "No photo uploaded." });
-    }
-
-    const sceneId = req.body.scene;
-    if (!SCENES[sceneId]) {
-      return res.status(400).json({ error: "Unknown scene." });
-    }
-
-    const settings = {
-      style: req.body.style,
-      exaggeration: req.body.exaggeration,
-      outline: req.body.outline,
-      palette: req.body.palette,
-    };
-
-    const { prompt, sceneSpec } = buildPrompt(sceneId, settings);
-
-    const image = await toFile(req.file.buffer, req.file.originalname || "photo.png", {
-      type: req.file.mimetype,
-    });
-
-    const result = await openai.images.edit({
-      model: MODEL,
-      image,
-      prompt,
-      size: "1024x1024",
-      quality: QUALITY,
-      n: 1,
-      ...(INPUT_FIDELITY ? { input_fidelity: INPUT_FIDELITY } : {}),
-    });
-
-    const b64 = result.data?.[0]?.b64_json;
-    if (!b64) {
-      return res.status(502).json({ error: "The image model returned no image." });
-    }
-
-    res.json({
-      image: `data:image/png;base64,${b64}`,
-      caption: sceneSpec,
-      prompt,
-    });
-  } catch (err) {
-    console.error("Generation failed:", err?.message || err);
-    const status = err?.status && err.status >= 400 && err.status < 600 ? err.status : 500;
-    res.status(status).json({ error: err?.message || "Something went wrong." });
-  }
-});
-
-// =====================================================================
-// Storybook (homework 2). Same rules: one request in = one API call out.
-// =====================================================================
-
-// MOCK_IMAGES=1 skips OpenAI and echoes the first input image back, so the
-// whole pipeline (pages, text layout, PDF) can be tested for free.
-const MOCK = process.env.MOCK_IMAGES === "1";
-
-// gpt-image-1-mini rejects input_fidelity "high", so only send it to models that accept it.
+// ---------------------------------------------------------------------
+// Image calls. Each function below makes exactly ONE OpenAI call: no loops,
+// no retries. Pages run in parallel because the browser sends one request
+// per page at the same time.
+// ---------------------------------------------------------------------
 const fidelityFor = (model) =>
   INPUT_FIDELITY && !model.includes("mini") ? { input_fidelity: INPUT_FIDELITY } : {};
 
-async function asUpload(file, name) {
-  return toFile(file.buffer, name, { type: file.mimetype });
+function sniffMime(buf) {
+  if (buf[0] === 0xff && buf[1] === 0xd8) return "image/jpeg";
+  if (buf[0] === 0x89 && buf[1] === 0x50) return "image/png";
+  if (buf.slice(8, 12).toString() === "WEBP") return "image/webp";
+  return "application/octet-stream";
 }
+const EXT = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" };
 
-// Exactly ONE images.edit call. No loop, no retry.
+// images: [{ buffer, mime }] -> { buffer, mime }
 async function editImage({ images, prompt, size }) {
-  if (MOCK) return images[0].buffer.toString("base64");
-  const files = await Promise.all(images.map((f, i) => asUpload(f, `input-${i}.png`)));
+  if (MOCK) {
+    await new Promise((r) => setTimeout(r, 1500 + Math.random() * 2500)); // feel the progress bars
+    return { buffer: images[0].buffer, mime: images[0].mime };
+  }
+  if (!openai) throw Object.assign(new Error("The server has no API key yet."), { status: 503 });
+  const files = await Promise.all(
+    images.map((img, i) => toFile(img.buffer, `input-${i}.${EXT[img.mime] || "png"}`, { type: img.mime }))
+  );
   const result = await openai.images.edit({
     model: MODEL,
     image: files.length === 1 ? files[0] : files,
@@ -175,96 +108,320 @@ async function editImage({ images, prompt, size }) {
     size,
     quality: QUALITY,
     n: 1,
+    output_format: "jpeg", // ~10x smaller than PNG: cheaper to store, faster to load
+    output_compression: 88,
     ...fidelityFor(MODEL),
   });
   const b64 = result.data?.[0]?.b64_json;
   if (!b64) throw Object.assign(new Error("The image model returned no image."), { status: 502 });
-  return b64;
+  return { buffer: Buffer.from(b64, "base64"), mime: "image/jpeg" };
 }
 
-function requireKey(res) {
-  if (!openai && !MOCK) {
-    res.status(503).json({ error: "The server has no API key yet. Set OPENAI_API_KEY in the environment." });
-    return false;
-  }
-  return true;
-}
-
-function sendError(res, err) {
-  console.error("Book generation failed:", err?.message || err);
+function sendError(res, err, context = {}) {
   const status = err?.status && err.status >= 400 && err.status < 600 ? err.status : 500;
+  logger.error("request failed", { ...context, status, error: err?.message });
   res.status(status).json({ error: err?.message || "Something went wrong." });
 }
 
-const bookUpload = upload.fields([
-  { name: "photo", maxCount: 1 },
-  { name: "reference", maxCount: 1 },
-  { name: "page", maxCount: 1 },
-]);
+// ---------------------------------------------------------------------
+// Homework 1: the two-scene page (unchanged; no login needed, password needed)
+// ---------------------------------------------------------------------
+app.get("/api/scenes", (_req, res) => res.json(SCENES));
 
-// Page list for the front end (text + where the text goes). Prompts stay on the server.
-app.get("/api/book", (_req, res) => {
-  res.json({
-    style: STYLE,
-    pages: READY_PAGES.map(({ id, number, title, text, textArea }) => ({ id, number, title, text, textArea })),
+app.post("/api/generate", requirePassword, upload.single("photo"), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "No photo uploaded." });
+    if (!SCENES[req.body.scene]) return res.status(400).json({ error: "Unknown scene." });
+    const { prompt, sceneSpec } = buildPrompt(req.body.scene, {
+      style: req.body.style,
+      exaggeration: req.body.exaggeration,
+      outline: req.body.outline,
+      palette: req.body.palette,
+    });
+    const started = Date.now();
+    const out = await editImage({
+      images: [{ buffer: req.file.buffer, mime: req.file.mimetype }],
+      prompt,
+      size: "1024x1024",
+    });
+    logger.info("image generated", { kind: "scene", scene: req.body.scene, ms: Date.now() - started });
+    res.json({ image: `data:${out.mime};base64,${out.buffer.toString("base64")}`, caption: sceneSpec, prompt });
+  } catch (err) {
+    sendError(res, err, { route: "generate" });
+  }
+});
+
+// ---------------------------------------------------------------------
+// Storybook: signed-in users, books saved in the database
+// ---------------------------------------------------------------------
+async function main() {
+  const store = await createStore();
+  registerAuth(app, store);
+
+  app.get("/api/status", (_req, res) => {
+    res.json({
+      keyConfigured: Boolean(API_KEY),
+      mock: MOCK,
+      model: MODEL,
+      quality: QUALITY,
+      inputFidelity: INPUT_FIDELITY,
+      passwordRequired: Boolean(GENERATE_PASSWORD),
+      loginConfigured,
+      storage: store.kind,
+    });
   });
-});
 
-// Step 1: uploaded photo -> ONE character reference image of Jack.
-app.post("/api/book/character", requirePassword, bookUpload, async (req, res) => {
-  try {
-    if (!requireKey(res)) return;
-    const photo = req.files?.photo?.[0];
-    if (!photo) return res.status(400).json({ error: "No photo uploaded." });
-    const prompt = buildCharacterPrompt();
-    const b64 = await editImage({ images: [photo], prompt, size: "1024x1536" });
-    res.json({ image: `data:image/png;base64,${b64}`, prompt });
-  } catch (err) {
-    sendError(res, err);
+  // Quick check after deploying: is the database reachable?
+  app.get("/api/health", async (_req, res) => {
+    try {
+      await store.health();
+      res.json({ ok: true, storage: store.kind, login: loginConfigured, key: Boolean(API_KEY) || MOCK });
+    } catch (err) {
+      res.status(500).json({ ok: false, storage: store.kind, error: err.message });
+    }
+  });
+
+  // The story's page list (text + where the text goes). Prompts stay on the server.
+  app.get("/api/book", (_req, res) => {
+    res.json({
+      style: STYLE,
+      pages: READY_PAGES.map(({ id, number, title, text, textArea }) => ({ id, number, title, text, textArea })),
+    });
+  });
+
+  const imageUrl = (img) => `/api/images/${img.id}?v=${img.v}`;
+
+  async function bookJson(book) {
+    const images = await store.listImages(book.id);
+    const ref = images.find((i) => i.kind === "reference");
+    const pages = {};
+    for (const img of images.filter((i) => i.kind === "page")) {
+      pages[img.page_id] = { url: imageUrl(img), prompt: img.prompt };
+    }
+    return {
+      id: book.id,
+      child_name: book.child_name,
+      child_age: book.child_age,
+      child_favorites: book.child_favorites,
+      child_about: book.child_about,
+      created_at: book.created_at,
+      updated_at: book.updated_at,
+      reference: ref ? { url: imageUrl(ref), prompt: ref.prompt } : null,
+      pages,
+    };
   }
-});
 
-// Step 2: reference image + page prompt -> one page.
-app.post("/api/book/page", requirePassword, bookUpload, async (req, res) => {
-  try {
-    if (!requireKey(res)) return;
-    const reference = req.files?.reference?.[0];
-    const page = getPage(req.body.pageId);
-    if (!reference) return res.status(400).json({ error: "Create Jack (the character reference) first." });
-    if (!page) return res.status(400).json({ error: "Unknown page." });
-    const prompt = buildPagePrompt(page);
-    const b64 = await editImage({ images: [reference], prompt, size: "1536x1024" });
-    res.json({ image: `data:image/png;base64,${b64}`, prompt });
-  } catch (err) {
-    sendError(res, err);
+  // Loads the book and checks it belongs to the signed-in user.
+  async function loadBook(req, res) {
+    const book = await store.getBook(req.user.id, Number(req.params.id));
+    if (!book) res.status(404).json({ error: "Book not found." });
+    return book;
   }
-});
 
-// Step 3 (optional): edit an existing page ("same scene, one thing changed").
-app.post("/api/book/fix", requirePassword, bookUpload, async (req, res) => {
-  try {
-    if (!requireKey(res)) return;
-    const pageImage = req.files?.page?.[0];
-    const reference = req.files?.reference?.[0];
-    const page = getPage(req.body.pageId);
-    const instruction = (req.body.instruction || "").trim().slice(0, 500);
-    if (!pageImage || !reference) return res.status(400).json({ error: "Missing the page or reference image." });
+  async function logImage(req, book, kind, pageId, started, error) {
+    const detail = { kind, pageId, ms: Date.now() - started, model: MOCK ? "mock" : MODEL, quality: QUALITY };
+    if (error) detail.error = error.message;
+    logger[error ? "error" : "info"](error ? "image failed" : "image generated", {
+      userId: req.user.id,
+      bookId: book.id,
+      ...detail,
+    });
+    await store
+      .logEvent({ userId: req.user.id, bookId: book.id, type: error ? "image_failed" : "image_generated", detail })
+      .catch((e) => logger.error("event log failed", { error: e.message }));
+  }
+
+  app.get("/api/books", requireUser, async (req, res) => {
+    try {
+      const books = await store.listBooks(req.user.id);
+      res.json(
+        books.map((b) => ({
+          id: b.id,
+          child_name: b.child_name,
+          created_at: b.created_at,
+          updated_at: b.updated_at,
+          page_count: b.page_count,
+          total_pages: READY_PAGES.length,
+          thumbnail: b.reference_image_id ? `/api/images/${b.reference_image_id}?v=${b.reference_v}` : null,
+        }))
+      );
+    } catch (err) {
+      sendError(res, err, { route: "list books" });
+    }
+  });
+
+  app.post("/api/books", requireUser, async (req, res) => {
+    try {
+      const book = await store.createBook(req.user.id, req.body || {});
+      await store.logEvent({ userId: req.user.id, bookId: book.id, type: "book_created" });
+      logger.info("book created", { userId: req.user.id, bookId: book.id });
+      res.status(201).json(await bookJson(book));
+    } catch (err) {
+      sendError(res, err, { route: "create book" });
+    }
+  });
+
+  app.get("/api/books/:id", requireUser, async (req, res) => {
+    try {
+      const book = await loadBook(req, res);
+      if (book) res.json(await bookJson(book));
+    } catch (err) {
+      sendError(res, err, { route: "get book" });
+    }
+  });
+
+  app.patch("/api/books/:id", requireUser, async (req, res) => {
+    try {
+      const book = await store.updateBook(req.user.id, Number(req.params.id), req.body || {});
+      if (!book) return res.status(404).json({ error: "Book not found." });
+      res.json({ ok: true });
+    } catch (err) {
+      sendError(res, err, { route: "update book" });
+    }
+  });
+
+  app.delete("/api/books/:id", requireUser, async (req, res) => {
+    try {
+      const ok = await store.deleteBook(req.user.id, Number(req.params.id));
+      if (!ok) return res.status(404).json({ error: "Book not found." });
+      await store.logEvent({ userId: req.user.id, bookId: Number(req.params.id), type: "book_deleted" });
+      res.json({ ok: true });
+    } catch (err) {
+      sendError(res, err, { route: "delete book" });
+    }
+  });
+
+  // Step 1: photo -> ONE reference image of the child as Jack, saved with the book.
+  // The photo itself is NOT stored, only the cartoon.
+  app.post("/api/books/:id/character", requireUser, requirePassword, upload.single("photo"), async (req, res) => {
+    const book = await loadBook(req, res).catch((e) => sendError(res, e));
+    if (!book) return;
+    if (!req.file) return res.status(400).json({ error: "No photo uploaded." });
+    const started = Date.now();
+    try {
+      const prompt = buildCharacterPrompt();
+      const out = await editImage({ images: [{ buffer: req.file.buffer, mime: req.file.mimetype }], prompt, size: "1024x1536" });
+      const saved = await store.saveImage(book.id, "reference", "", out.buffer, sniffMime(out.buffer), prompt);
+      await logImage(req, book, "reference", null, started);
+      res.json({ url: imageUrl(saved), prompt });
+    } catch (err) {
+      await logImage(req, book, "reference", null, started, err);
+      sendError(res, err, { route: "character", bookId: book.id });
+    }
+  });
+
+  // Step 2: saved reference + page prompt -> one page. The browser calls this for
+  // every page at once, so pages generate in parallel.
+  app.post("/api/books/:id/pages/:pageId", requireUser, requirePassword, async (req, res) => {
+    const book = await loadBook(req, res).catch((e) => sendError(res, e));
+    if (!book) return;
+    const page = getPage(req.params.pageId);
     if (!page) return res.status(400).json({ error: "Unknown page." });
+    const started = Date.now();
+    try {
+      const reference = await store.getImageData(book.id, "reference", "");
+      if (!reference) return res.status(400).json({ error: "Create Jack (the character reference) first." });
+      const prompt = buildPagePrompt(page);
+      const out = await editImage({ images: [{ buffer: reference.data, mime: reference.mime }], prompt, size: "1536x1024" });
+      const saved = await store.saveImage(book.id, "page", page.id, out.buffer, sniffMime(out.buffer), prompt);
+      await logImage(req, book, "page", page.id, started);
+      res.json({ url: imageUrl(saved), prompt });
+    } catch (err) {
+      await logImage(req, book, "page", page.id, started, err);
+      sendError(res, err, { route: "page", bookId: book.id, pageId: page.id });
+    }
+  });
+
+  // Step 3 (optional): edit a saved page ("same scene, one thing changed").
+  app.post("/api/books/:id/pages/:pageId/fix", requireUser, requirePassword, async (req, res) => {
+    const book = await loadBook(req, res).catch((e) => sendError(res, e));
+    if (!book) return;
+    const page = getPage(req.params.pageId);
+    if (!page) return res.status(400).json({ error: "Unknown page." });
+    const instruction = String(req.body?.instruction || "").trim().slice(0, 500);
     if (!instruction) return res.status(400).json({ error: "Describe what to change." });
-    const prompt = buildFixPrompt(page, instruction);
-    const b64 = await editImage({ images: [pageImage, reference], prompt, size: "1536x1024" });
-    res.json({ image: `data:image/png;base64,${b64}`, prompt });
-  } catch (err) {
-    sendError(res, err);
-  }
-});
+    const started = Date.now();
+    try {
+      const [current, reference] = await Promise.all([
+        store.getImageData(book.id, "page", page.id),
+        store.getImageData(book.id, "reference", ""),
+      ]);
+      if (!current || !reference) return res.status(400).json({ error: "Generate this page first." });
+      const prompt = buildFixPrompt(page, instruction);
+      const out = await editImage({
+        images: [
+          { buffer: current.data, mime: current.mime },
+          { buffer: reference.data, mime: reference.mime },
+        ],
+        prompt,
+        size: "1536x1024",
+      });
+      const saved = await store.saveImage(book.id, "page", page.id, out.buffer, sniffMime(out.buffer), prompt);
+      await logImage(req, book, "page-edit", page.id, started);
+      res.json({ url: imageUrl(saved), prompt });
+    } catch (err) {
+      await logImage(req, book, "page-edit", page.id, started, err);
+      sendError(res, err, { route: "fix", bookId: book.id, pageId: page.id });
+    }
+  });
 
-// Errors from multer (wrong file type, too large)
-app.use((err, _req, res, _next) => {
-  res.status(400).json({ error: err.message || "Bad request." });
-});
+  // Small client-side events worth logging (e.g. a PDF was downloaded).
+  const CLIENT_EVENTS = new Set(["pdf_downloaded"]);
+  app.post("/api/books/:id/events", requireUser, async (req, res) => {
+    try {
+      const book = await loadBook(req, res);
+      if (!book) return;
+      const type = String(req.body?.type || "");
+      if (!CLIENT_EVENTS.has(type)) return res.status(400).json({ error: "Unknown event." });
+      await store.logEvent({ userId: req.user.id, bookId: book.id, type });
+      logger.info(type, { userId: req.user.id, bookId: book.id });
+      res.json({ ok: true });
+    } catch (err) {
+      sendError(res, err, { route: "event" });
+    }
+  });
 
-app.listen(PORT, () => {
-  console.log(`Listening on port ${PORT}`);
-  console.log(API_KEY ? `API key loaded. Model: ${MODEL} (${QUALITY})` : "WARNING: OPENAI_API_KEY is not set.");
+  // The signed-in user's own activity log.
+  app.get("/api/activity", requireUser, async (req, res) => {
+    try {
+      res.json(await store.recentEvents(req.user.id, 50));
+    } catch (err) {
+      sendError(res, err, { route: "activity" });
+    }
+  });
+
+  // Images are only served to the user who owns the book.
+  app.get("/api/images/:id", requireUser, async (req, res) => {
+    try {
+      const img = await store.getImageForUser(req.user.id, Number(req.params.id));
+      if (!img) return res.status(404).end();
+      res.set("Content-Type", img.mime);
+      res.set("Cache-Control", "private, max-age=31536000, immutable"); // URL has ?v=, so it changes when the image does
+      res.send(img.data);
+    } catch (err) {
+      sendError(res, err, { route: "image" });
+    }
+  });
+
+  // Errors from multer (wrong file type, too large) and bad JSON
+  app.use((err, _req, res, _next) => {
+    res.status(err.status && err.status < 500 ? err.status : 400).json({ error: err.message || "Bad request." });
+  });
+
+  app.listen(PORT, () => {
+    logger.info("server started", {
+      port: PORT,
+      storage: store.kind,
+      login: loginConfigured,
+      key: Boolean(API_KEY),
+      mock: MOCK,
+      model: MODEL,
+      quality: QUALITY,
+    });
+  });
+}
+
+main().catch((err) => {
+  logger.error("startup failed", { error: err.message });
+  process.exit(1);
 });

@@ -12,10 +12,11 @@
 <body>
   <header>
     <h1>Jack and the Beanstalk</h1>
-    <p>A storybook starring your child. This version builds pages 1–3 and the About Me page.</p>
+    <p>A storybook starring your child. Sign in, and your books are saved for when you come back.</p>
     <p class="crumbs"><a href="/">← Two-scene version</a></p>
   </header>
 
+  <div id="userBar" class="user-bar" hidden></div>
   <div id="pwBar" class="pw-bar" hidden></div>
 
   <div id="keyWarning" class="warning" hidden>
@@ -24,8 +25,43 @@
   <div id="mockWarning" class="warning" hidden>
     Test mode: images are not really generated (MOCK_IMAGES=1).
   </div>
+  <div id="loginNotice" class="warning" hidden></div>
 
-  <main class="book">
+  <!-- SIGNED OUT -->
+  <main class="book" id="signedOut" hidden>
+    <section class="step signin-card">
+      <h2>Sign in to make your book</h2>
+      <p class="hint">Your books are saved to your Google account, so they're still here next time.</p>
+      <a class="google-btn" id="googleBtn" href="/auth/google?next=/book.html">
+        <svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9 3.6l6.7-6.7C35.6 2.4 30.2 0 24 0 14.6 0 6.6 5.4 2.7 13.2l7.8 6.1C12.4 13.6 17.7 9.5 24 9.5z"/><path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.7c-.6 3-2.3 5.5-4.8 7.2l7.6 5.9c4.4-4.1 7-10.2 7-17.6z"/><path fill="#FBBC05" d="M10.5 28.7A14.5 14.5 0 0 1 9.5 24c0-1.6.3-3.2.9-4.7l-7.8-6.1A24 24 0 0 0 0 24c0 3.9.9 7.5 2.6 10.8l7.9-6.1z"/><path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.6-5.9c-2.1 1.4-4.9 2.3-8.3 2.3-6.3 0-11.6-4.1-13.5-9.8l-7.9 6.1C6.6 42.6 14.6 48 24 48z"/></svg>
+        Sign in with Google
+      </a>
+      <p class="error" id="loginUnavailable" hidden>Google sign-in isn't set up on this server yet.</p>
+    </section>
+  </main>
+
+  <!-- LIBRARY -->
+  <main class="book" id="library" hidden>
+    <section class="step">
+      <div class="lib-head">
+        <h2>My books</h2>
+        <button id="newBook">+ New book</button>
+      </div>
+      <div id="bookList" class="book-list"></div>
+      <p class="hint" id="noBooks" hidden>No books yet. Click <strong>New book</strong> to make the first one.</p>
+    </section>
+    <section class="step">
+      <details id="activity">
+        <summary><strong>Recent activity</strong> (log)</summary>
+        <ul id="activityList" class="activity"></ul>
+      </details>
+    </section>
+  </main>
+
+  <!-- EDITOR -->
+  <main class="book" id="editor" hidden>
+    <p class="back"><button type="button" class="link" id="backToLibrary">← My books</button> <span class="saved" id="savedNote"></span></p>
+
     <!-- STEP 1 -->
     <section class="step">
       <div class="step-head"><span class="num">1</span><h2>The child</h2></div>
@@ -48,10 +84,11 @@
             <input type="file" id="cameraFallback" accept="image/*" capture="user" hidden />
           </div>
           <p class="error" id="cameraError"></p>
+          <p class="hint small">The photo is only used to draw Jack. It isn't saved; the cartoon is.</p>
         </div>
 
         <form class="about" id="aboutForm" autocomplete="off">
-          <p class="hint">For the last page of the book, "About Me".</p>
+          <p class="hint">For the last page of the book, "About Me". Saved automatically.</p>
           <label><span>Child's name <span class="req">*</span></span>
             <input id="childName" maxlength="40" required placeholder="e.g. Avi" />
           </label>
@@ -70,22 +107,31 @@
 
     <!-- STEP 2 -->
     <section class="step">
-      <div class="step-head"><span class="num">2</span><h2>Make Jack</h2></div>
+      <div class="step-head"><span class="num">2</span><h2>Make the book</h2></div>
       <div class="two-col">
         <div class="ref-frame" id="refFrame">No Jack yet</div>
         <div class="ref-side">
-          <p>The photo is turned into <strong>one reference image</strong> of Jack in his costume. That same image is reused for every page, so Jack looks like the same child throughout the book.</p>
-          <button id="makeJack" disabled>Create Jack from the photo</button>
+          <p>First the photo becomes <strong>one reference image</strong> of Jack. Then every page is drawn from that same image, <strong>all pages at once</strong>, so Jack looks like the same child throughout.</p>
+          <button id="generateBook" class="big" disabled>Generate the whole book</button>
+          <button id="makeJack" class="secondary" disabled>Only redo Jack from the photo</button>
           <p class="error" id="jackError"></p>
-          <details><summary>Prompt sent</summary><pre id="jackPrompt">(not sent yet)</pre></details>
+          <details><summary>Prompt sent for Jack</summary><pre id="jackPrompt">(not sent yet)</pre></details>
         </div>
+      </div>
+
+      <div class="progress-panel" id="progressPanel" hidden>
+        <div class="overall">
+          <div class="overall-label"><strong id="overallText">0 of 4 images</strong><span id="overallTime"></span></div>
+          <div class="bar"><div class="fill" id="overallFill"></div></div>
+        </div>
+        <ul class="jobs" id="jobs"></ul>
       </div>
     </section>
 
     <!-- STEP 3 -->
     <section class="step">
       <div class="step-head"><span class="num">3</span><h2>The pages</h2></div>
-      <p class="hint">Each page is one call. If a page is almost right, use <strong>Edit this page</strong> to change one thing instead of starting over.</p>
+      <p class="hint">Not happy with a page? <strong>Regenerate</strong> it, or use <strong>Edit this page</strong> to change one thing and keep the rest.</p>
       <div id="pages" class="pages"></div>
     </section>
 

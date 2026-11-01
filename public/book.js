@@ -1,32 +1,285 @@
-// Storybook front end. Every button press makes at most ONE request, and each
-// request makes ONE image call on the server. Nothing here loops or retries.
+// Storybook front end: Google sign-in, a library of saved books, and an editor.
+// Every image is ONE request = ONE image call on the server. "Generate the whole
+// book" makes Jack first, then sends every page request at the same time, so
+// pages are drawn in parallel, each with its own progress bar. Nothing retries
+// automatically.
 
 const $ = (id) => document.getElementById(id);
 
 const state = {
-  photo: null, // File: the uploaded or captured photo
-  reference: null, // data URL: the ONE character image reused on every page
-  pages: [], // [{ id, number, title, text, textArea }] from the server
-  images: {}, // pageId -> data URL
+  me: null,
+  status: {},
+  story: [], // [{ id, number, title, text, textArea }]
+  book: null, // { id, child_*, reference: {url,prompt}|null, pages: { pageId: {url,prompt} } }
+  photo: null, // File chosen in this session (never uploaded except to draw Jack)
+  photoIsNew: false, // a new photo was chosen since Jack was last drawn
+  jobs: new Map(), // key -> job (see progress section)
+  durations: { reference: [], page: [] }, // seconds, to estimate progress
 };
 
-// ---------------------------------------------------------------- photo
+// ================================================================ API helper
+async function api(method, url, { json, form } = {}) {
+  const headers = { ...window.appAuth.headers() };
+  let body;
+  if (json !== undefined) {
+    headers["Content-Type"] = "application/json";
+    body = JSON.stringify(json);
+  } else if (form) {
+    body = form;
+  }
+  const res = await fetch(url, { method, headers, body });
+  let data = {};
+  try {
+    data = await res.json();
+  } catch {
+    if (!res.ok) data = { error: `Server error (${res.status}).` };
+  }
+  if (!res.ok) {
+    window.appAuth.handleError(data);
+    if (data.needLogin) showSignedOut();
+    throw new Error(data.error || "Request failed.");
+  }
+  return data;
+}
+
+// ================================================================ views
+function show(view) {
+  for (const id of ["signedOut", "library", "editor"]) $(id).hidden = id !== view;
+}
+
+function renderUserBar() {
+  const bar = $("userBar");
+  if (!state.me) {
+    bar.hidden = true;
+    return;
+  }
+  bar.hidden = false;
+  bar.innerHTML = `
+    <img class="avatar" alt="" referrerpolicy="no-referrer" />
+    <span class="who"><strong class="name"></strong> <span class="email"></span></span>
+    <button type="button" class="link" id="libLink">My books</button>
+    <a class="signout" href="/auth/logout?next=/book.html">Sign out</a>`;
+  const img = bar.querySelector(".avatar");
+  if (state.me.picture) img.src = state.me.picture;
+  else img.remove();
+  bar.querySelector(".name").textContent = state.me.name || "";
+  bar.querySelector(".email").textContent = state.me.email || "";
+  bar.querySelector("#libLink").addEventListener("click", openLibrary);
+}
+
+function showSignedOut() {
+  state.me = null;
+  renderUserBar();
+  $("loginUnavailable").hidden = state.status.loginConfigured !== false;
+  $("googleBtn").hidden = state.status.loginConfigured === false;
+  const next = location.pathname + location.search;
+  $("googleBtn").href = `/auth/google?next=${encodeURIComponent(next)}`;
+  show("signedOut");
+}
+
+// ================================================================ library
+const fmtDate = (d) =>
+  new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+
+async function openLibrary() {
+  history.replaceState(null, "", "/book.html");
+  state.book = null;
+  show("library");
+  const list = $("bookList");
+  list.innerHTML = '<p class="hint">Loading your books…</p>';
+  try {
+    const books = await api("GET", "/api/books");
+    list.innerHTML = "";
+    $("noBooks").hidden = books.length > 0;
+    for (const b of books) list.appendChild(bookCard(b));
+  } catch (err) {
+    list.innerHTML = "";
+    const p = document.createElement("p");
+    p.className = "error";
+    p.textContent = err.message;
+    list.appendChild(p);
+  }
+  loadActivity();
+}
+
+function bookCard(b) {
+  const card = document.createElement("article");
+  card.className = "book-card";
+  card.innerHTML = `
+    <div class="thumb"></div>
+    <div class="meta">
+      <strong class="title"></strong>
+      <span class="sub"></span>
+    </div>
+    <div class="card-actions">
+      <button type="button" class="open">Open</button>
+      <button type="button" class="secondary del">Delete</button>
+    </div>`;
+  if (b.thumbnail) {
+    const img = document.createElement("img");
+    img.src = b.thumbnail;
+    img.alt = "";
+    card.querySelector(".thumb").appendChild(img);
+  } else {
+    card.querySelector(".thumb").textContent = "No Jack yet";
+  }
+  card.querySelector(".title").textContent = b.child_name ? `Starring ${b.child_name}` : "Untitled book";
+  card.querySelector(".sub").textContent = `${b.page_count} of ${b.total_pages} pages · ${fmtDate(b.updated_at)}`;
+  card.querySelector(".open").addEventListener("click", () => openBook(b.id));
+  const del = card.querySelector(".del");
+  // Two clicks to delete (no browser confirm dialog).
+  del.addEventListener("click", async () => {
+    if (!del.dataset.armed) {
+      del.dataset.armed = "1";
+      del.textContent = "Click again to delete";
+      setTimeout(() => {
+        delete del.dataset.armed;
+        del.textContent = "Delete";
+      }, 4000);
+      return;
+    }
+    try {
+      await api("DELETE", `/api/books/${b.id}`);
+      card.remove();
+      $("noBooks").hidden = $("bookList").children.length > 0;
+    } catch (err) {
+      del.textContent = err.message;
+    }
+  });
+  return card;
+}
+
+const EVENT_LABELS = {
+  login: "Signed in",
+  book_created: "Started a book",
+  book_deleted: "Deleted a book",
+  image_generated: "Drew an image",
+  image_failed: "Image failed",
+  pdf_downloaded: "Downloaded the PDF",
+};
+
+async function loadActivity() {
+  const ul = $("activityList");
+  ul.innerHTML = "";
+  try {
+    const events = await api("GET", "/api/activity");
+    if (!events.length) ul.innerHTML = '<li class="hint">Nothing yet.</li>';
+    for (const e of events) {
+      const li = document.createElement("li");
+      const d = e.detail || {};
+      let what = EVENT_LABELS[e.type] || e.type;
+      if (d.kind) what += `: ${d.kind === "reference" ? "Jack" : d.kind}${d.pageId ? ` (${d.pageId})` : ""}`;
+      if (d.ms) what += ` in ${(d.ms / 1000).toFixed(1)}s`;
+      if (d.error) what += `: ${d.error}`;
+      li.textContent = `${new Date(e.created_at).toLocaleString()} · ${what}${e.book_id ? ` · book #${e.book_id}` : ""}`;
+      ul.appendChild(li);
+    }
+  } catch {
+    ul.innerHTML = '<li class="hint">Couldn\'t load the log.</li>';
+  }
+}
+
+$("newBook").addEventListener("click", async () => {
+  const btn = $("newBook");
+  btn.disabled = true;
+  try {
+    const book = await api("POST", "/api/books", { json: {} });
+    await openBook(book.id);
+  } catch (err) {
+    alertInline($("bookList"), err.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+function alertInline(container, msg) {
+  const p = document.createElement("p");
+  p.className = "error";
+  p.textContent = msg;
+  container.prepend(p);
+}
+
+$("backToLibrary").addEventListener("click", openLibrary);
+
+// ================================================================ editor
+async function openBook(id) {
+  const book = await api("GET", `/api/books/${id}`);
+  state.book = book;
+  state.photo = null;
+  state.photoIsNew = false;
+  history.replaceState(null, "", `/book.html?book=${book.id}`);
+
+  $("childName").value = book.child_name || "";
+  $("childAge").value = book.child_age || "";
+  $("childFavorites").value = book.child_favorites || "";
+  $("childAbout").value = book.child_about || "";
+  $("preview").hidden = true;
+  $("dropText").hidden = false;
+  $("savedNote").textContent = "";
+  $("jackError").textContent = "";
+  $("jackPrompt").textContent = book.reference?.prompt || "(not sent yet)";
+  $("progressPanel").hidden = true;
+  $("jobs").innerHTML = "";
+  state.jobs.clear();
+
+  renderReference();
+  renderPages();
+  show("editor");
+  window.scrollTo(0, 0);
+}
+
+function renderReference() {
+  const frame = $("refFrame");
+  frame.innerHTML = "";
+  if (state.book?.reference) {
+    const img = document.createElement("img");
+    img.src = state.book.reference.url;
+    img.alt = "Character reference: the child as Jack";
+    frame.appendChild(img);
+  } else {
+    frame.textContent = "No Jack yet";
+  }
+}
+
+// ---------- About Me: autosave
+let saveTimer = null;
+function scheduleSave() {
+  if (!state.book) return;
+  $("savedNote").textContent = "Saving…";
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => {
+    try {
+      await api("PATCH", `/api/books/${state.book.id}`, {
+        json: {
+          child_name: $("childName").value.trim(),
+          child_age: $("childAge").value.trim(),
+          child_favorites: $("childFavorites").value.trim(),
+          child_about: $("childAbout").value.trim(),
+        },
+      });
+      $("savedNote").textContent = "All changes saved";
+    } catch (err) {
+      $("savedNote").textContent = `Not saved: ${err.message}`;
+    }
+  }, 700);
+}
+["childName", "childAge", "childFavorites", "childAbout"].forEach((id) =>
+  $(id).addEventListener("input", () => {
+    scheduleSave();
+    refresh();
+  })
+);
+
+// ---------- photo (upload or camera)
 function setPhoto(file) {
   if (!file) return;
   state.photo = file;
+  state.photoIsNew = true;
   $("preview").src = URL.createObjectURL(file);
   $("preview").hidden = false;
   $("dropText").hidden = true;
-  // A new child means a new Jack: old reference and pages no longer match.
-  if (state.reference) {
-    state.reference = null;
-    state.images = {};
-    $("refFrame").textContent = "New photo: create Jack again";
-    renderPages();
-  }
   refresh();
 }
-
 $("photo").addEventListener("change", () => setPhoto($("photo").files[0]));
 $("cameraFallback").addEventListener("change", () => setPhoto($("cameraFallback").files[0]));
 
@@ -39,7 +292,6 @@ function stopCamera() {
   $("drop").hidden = false;
   $("takePhoto").hidden = false;
 }
-
 $("takePhoto").addEventListener("click", async () => {
   $("cameraError").textContent = "";
   if (!navigator.mediaDevices?.getUserMedia) {
@@ -63,7 +315,6 @@ $("takePhoto").addEventListener("click", async () => {
         : "Couldn't open a camera on this device. You can upload a photo instead.";
   }
 });
-
 $("snap").addEventListener("click", () => {
   const video = $("video");
   const canvas = document.createElement("canvas");
@@ -81,73 +332,214 @@ $("snap").addEventListener("click", () => {
 });
 $("cancelCam").addEventListener("click", stopCamera);
 
-// ---------------------------------------------------------------- helpers
-async function dataUrlToBlob(dataUrl) {
-  return (await fetch(dataUrl)).blob();
+// ================================================================ progress
+// One row per image. The model doesn't report progress, so each bar moves on an
+// estimate (based on how long earlier images took) and jumps to 100% when its
+// image actually arrives. The overall bar counts finished images.
+const DEFAULT_SECONDS = { reference: 45, page: 55 };
+
+function expectedSeconds(kind) {
+  if (state.status.mock) return 4;
+  const past = state.durations[kind];
+  return past.length ? past.reduce((a, b) => a + b, 0) / past.length : DEFAULT_SECONDS[kind];
 }
 
-async function post(url, form) {
-  const res = await fetch(url, { method: "POST", body: form, headers: window.appAuth.headers() });
-  let data;
-  try {
-    data = await res.json();
-  } catch {
-    throw new Error(`Server error (${res.status}).`);
+function addJob(key, label, kind) {
+  $("progressPanel").hidden = false;
+  let job = state.jobs.get(key);
+  if (!job) {
+    const li = document.createElement("li");
+    li.className = "job";
+    li.innerHTML = `
+      <div class="job-label"><span class="name"></span><span class="state"></span></div>
+      <div class="bar"><div class="fill"></div></div>`;
+    li.querySelector(".name").textContent = label;
+    $("jobs").appendChild(li);
+    job = { key, label, kind, el: li };
+    state.jobs.set(key, job);
   }
-  if (!res.ok) {
-    window.appAuth.handleError(data);
-    throw new Error(data.error || "Generation failed.");
-  }
-  return data;
+  Object.assign(job, { status: "queued", start: null, end: null, error: null });
+  updateJobEl(job);
+  updateOverall();
+  return job;
 }
 
-function setBusy(button, busy, label) {
-  if (busy) {
-    button.dataset.label = button.textContent;
-    button.textContent = label;
-    button.dataset.busy = "1";
-    button.disabled = true;
-  } else {
-    button.textContent = button.dataset.label || button.textContent;
-    delete button.dataset.busy;
+function startJob(job) {
+  job.status = "running";
+  job.start = performance.now();
+  job.expected = expectedSeconds(job.kind);
+  updateJobEl(job);
+  tick();
+}
+
+function endJob(job, error) {
+  job.end = performance.now();
+  job.status = error ? "failed" : "done";
+  job.error = error ? error.message : null;
+  if (!error) state.durations[job.kind].push((job.end - job.start) / 1000);
+  updateJobEl(job);
+  updateOverall();
+}
+
+function updateJobEl(job) {
+  const fill = job.el.querySelector(".fill");
+  const st = job.el.querySelector(".state");
+  job.el.dataset.status = job.status;
+  if (job.status === "queued") {
+    fill.style.width = "0%";
+    st.textContent = "Waiting";
+  } else if (job.status === "running") {
+    const secs = (performance.now() - job.start) / 1000;
+    const pct = 95 * (1 - Math.exp(-secs / (job.expected * 0.6)));
+    fill.style.width = `${pct.toFixed(1)}%`;
+    st.textContent = `Drawing… ${Math.round(secs)}s`;
+  } else if (job.status === "done") {
+    fill.style.width = "100%";
+    st.textContent = `Done in ${Math.round((job.end - job.start) / 1000)}s`;
+  } else if (job.status === "failed") {
+    fill.style.width = "100%";
+    st.textContent = `Failed: ${job.error}`;
+  } else if (job.status === "skipped") {
+    fill.style.width = "0%";
+    st.textContent = "Not started (Jack failed)";
   }
 }
 
-// ---------------------------------------------------------------- step 2: Jack
-$("makeJack").addEventListener("click", async () => {
-  const btn = $("makeJack");
-  $("jackError").textContent = "";
-  setBusy(btn, true, "Drawing Jack… (up to a minute)");
-  $("refFrame").innerHTML = '<div><div class="spinner"></div>Drawing Jack…</div>';
+function updateOverall() {
+  const jobs = [...state.jobs.values()];
+  const done = jobs.filter((j) => j.status === "done").length;
+  const failed = jobs.filter((j) => j.status === "failed").length;
+  $("overallText").textContent =
+    `${done} of ${jobs.length} images done` + (failed ? ` · ${failed} failed` : "");
+  $("overallFill").style.width = jobs.length ? `${(done / jobs.length) * 100}%` : "0%";
+  const starts = jobs.filter((j) => j.start).map((j) => j.start);
+  if (starts.length) {
+    const running = jobs.some((j) => j.status === "running");
+    const endT = running ? performance.now() : Math.max(...jobs.map((j) => j.end || 0));
+    $("overallTime").textContent = `${Math.round((endT - Math.min(...starts)) / 1000)}s`;
+  }
+}
+
+let ticking = false;
+function tick() {
+  if (ticking) return;
+  ticking = true;
+  const loop = () => {
+    const running = [...state.jobs.values()].filter((j) => j.status === "running");
+    running.forEach(updateJobEl);
+    updateOverall();
+    if (running.length) requestAnimationFrame(loop);
+    else ticking = false;
+  };
+  requestAnimationFrame(loop);
+}
+
+const isBusy = () => [...state.jobs.values()].some((j) => j.status === "running" || j.status === "queued");
+
+// ================================================================ image requests
+// Each of these sends exactly one request (= one image call).
+
+async function drawJack() {
+  const job = state.jobs.get("reference") || addJob("reference", "Jack (reference image)", "reference");
+  startJob(job);
+  refresh();
   try {
     const form = new FormData();
     form.append("photo", state.photo);
-    const data = await post("/api/book/character", form);
-    state.reference = data.image;
-    $("refFrame").innerHTML = "";
-    const img = document.createElement("img");
-    img.src = data.image;
-    img.alt = "Character reference: the child as Jack";
-    $("refFrame").appendChild(img);
+    const data = await api("POST", `/api/books/${state.book.id}/character`, { form });
+    state.book.reference = { url: data.url, prompt: data.prompt };
+    state.photoIsNew = false;
     $("jackPrompt").textContent = data.prompt;
-    btn.dataset.label = "Create Jack again";
+    renderReference();
+    endJob(job);
+    return true;
   } catch (err) {
-    $("refFrame").textContent = "No Jack yet";
+    endJob(job, err);
     $("jackError").textContent = err.message;
+    return false;
   } finally {
-    setBusy(btn, false);
     refresh();
   }
+}
+
+async function drawPage(page, { fix } = {}) {
+  const key = `page-${page.id}`;
+  const label = `Page ${page.number} · ${page.title}${fix ? " (edit)" : ""}`;
+  const job = state.jobs.get(key) || addJob(key, label, "page");
+  job.el.querySelector(".name").textContent = label;
+  startJob(job);
+  const card = document.querySelector(`.page-card[data-id="${page.id}"]`);
+  card?.classList.add("drawing");
+  card && (card.querySelector(".error").textContent = "");
+  refresh();
+  try {
+    const url = fix
+      ? `/api/books/${state.book.id}/pages/${page.id}/fix`
+      : `/api/books/${state.book.id}/pages/${page.id}`;
+    const data = await api("POST", url, fix ? { json: { instruction: fix } } : {});
+    state.book.pages[page.id] = { url: data.url, prompt: data.prompt };
+    endJob(job);
+    if (card) {
+      showPageImage(card, page);
+      card.querySelector("pre").textContent = data.prompt;
+      if (fix) card.querySelector(".fix-text").value = "";
+    }
+    return true;
+  } catch (err) {
+    endJob(job, err);
+    if (card) card.querySelector(".error").textContent = err.message;
+    return false;
+  } finally {
+    card?.classList.remove("drawing");
+    refresh();
+  }
+}
+
+// The whole book: Jack first (pages need him), then ALL pages in parallel.
+$("generateBook").addEventListener("click", async () => {
+  if (isBusy()) return;
+  $("jackError").textContent = "";
+  $("jobs").innerHTML = "";
+  state.jobs.clear();
+
+  const needJack = !state.book.reference || (state.photo && state.photoIsNew);
+  if (needJack) addJob("reference", "Jack (reference image)", "reference");
+  for (const p of state.story) addJob(`page-${p.id}`, `Page ${p.number} · ${p.title}`, "page");
+  refresh();
+  $("progressPanel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+  if (needJack && !(await drawJack())) {
+    for (const p of state.story) {
+      const job = state.jobs.get(`page-${p.id}`);
+      job.status = "skipped";
+      updateJobEl(job);
+    }
+    updateOverall();
+    refresh();
+    return;
+  }
+  // Parallel: every page request goes out at once.
+  await Promise.allSettled(state.story.map((p) => drawPage(p)));
 });
 
-// ---------------------------------------------------------------- step 3: pages
+$("makeJack").addEventListener("click", async () => {
+  if (isBusy()) return;
+  $("jackError").textContent = "";
+  $("jobs").innerHTML = "";
+  state.jobs.clear();
+  addJob("reference", "Jack (reference image)", "reference");
+  await drawJack();
+});
+
+// ================================================================ page cards
 function showPageImage(card, page) {
   const frame = card.querySelector(".page-frame");
   frame.querySelector("img")?.remove();
   frame.querySelector(".placeholder")?.remove();
-  if (state.images[page.id]) {
+  const saved = state.book?.pages?.[page.id];
+  if (saved) {
     const img = document.createElement("img");
-    img.src = state.images[page.id];
+    img.src = saved.url;
     img.alt = `Page ${page.number}: ${page.title}`;
     frame.prepend(img);
   } else {
@@ -161,7 +553,7 @@ function showPageImage(card, page) {
 function renderPages() {
   const wrap = $("pages");
   wrap.innerHTML = "";
-  for (const page of state.pages) {
+  for (const page of state.story) {
     const card = document.createElement("article");
     card.className = "page-card";
     card.dataset.id = page.id;
@@ -170,19 +562,24 @@ function renderPages() {
       <h3>Page ${page.number} · ${page.title}</h3>
       <div class="page-frame">
         <div class="text-zone ${ta.position} ${ta.tone}" style="height:${ta.size * 100}%"><span></span></div>
+        <div class="drawing-badge">Drawing…</div>
       </div>
       <div class="page-actions">
-        <button class="gen" disabled>Generate page ${page.number}</button>
+        <button class="gen secondary" disabled>Regenerate page ${page.number}</button>
       </div>
       <div class="fix-row">
         <input class="fix-text" maxlength="500" placeholder="Edit this page, e.g. “make the cow more visible in the doorway”" disabled />
         <button class="fix secondary" disabled>Edit this page</button>
       </div>
       <p class="error"></p>
-      <details><summary>Prompt sent</summary><pre>(not sent yet)</pre></details>`;
-    card.querySelector(".text-zone span").textContent = page.text; // textContent: no HTML injection
-    card.querySelector(".gen").addEventListener("click", () => generatePage(page, card));
-    card.querySelector(".fix").addEventListener("click", () => fixPage(page, card));
+      <details><summary>Prompt sent</summary><pre></pre></details>`;
+    card.querySelector(".text-zone span").textContent = page.text;
+    card.querySelector("pre").textContent = state.book?.pages?.[page.id]?.prompt || "(not sent yet)";
+    card.querySelector(".gen").addEventListener("click", () => !isBusy() && drawPage(page));
+    card.querySelector(".fix").addEventListener("click", () => {
+      const text = card.querySelector(".fix-text").value.trim();
+      if (text && !isBusy()) drawPage(page, { fix: text });
+    });
     card.querySelector(".fix-text").addEventListener("input", refresh);
     showPageImage(card, page);
     wrap.appendChild(card);
@@ -190,88 +587,49 @@ function renderPages() {
   refresh();
 }
 
-async function generatePage(page, card) {
-  const btn = card.querySelector(".gen");
-  const errorEl = card.querySelector(".error");
-  errorEl.textContent = "";
-  setBusy(btn, true, "Drawing… (up to a minute)");
-  try {
-    const form = new FormData();
-    form.append("pageId", page.id);
-    form.append("reference", await dataUrlToBlob(state.reference), "reference.png");
-    const data = await post("/api/book/page", form);
-    state.images[page.id] = data.image;
-    showPageImage(card, page);
-    card.querySelector("pre").textContent = data.prompt;
-    btn.dataset.label = `Regenerate page ${page.number}`;
-  } catch (err) {
-    errorEl.textContent = err.message;
-  } finally {
-    setBusy(btn, false);
-    refresh();
-  }
-}
-
-// Image EDIT endpoint: same picture, one thing changed.
-async function fixPage(page, card) {
-  const btn = card.querySelector(".fix");
-  const input = card.querySelector(".fix-text");
-  const errorEl = card.querySelector(".error");
-  errorEl.textContent = "";
-  setBusy(btn, true, "Editing…");
-  try {
-    const form = new FormData();
-    form.append("pageId", page.id);
-    form.append("instruction", input.value.trim());
-    form.append("page", await dataUrlToBlob(state.images[page.id]), "page.png");
-    form.append("reference", await dataUrlToBlob(state.reference), "reference.png");
-    const data = await post("/api/book/fix", form);
-    state.images[page.id] = data.image;
-    showPageImage(card, page);
-    card.querySelector("pre").textContent = data.prompt;
-    input.value = "";
-  } catch (err) {
-    errorEl.textContent = err.message;
-  } finally {
-    setBusy(btn, false);
-    refresh();
-  }
-}
-
-// ---------------------------------------------------------------- enable/disable
+// ================================================================ enable/disable
 function refresh() {
-  const makeJack = $("makeJack");
-  if (!makeJack.dataset.busy) makeJack.disabled = !state.photo;
+  if (!state.book) return;
+  const busy = isBusy();
+  const hasJack = Boolean(state.book.reference);
+
+  const gen = $("generateBook");
+  gen.disabled = busy || !(hasJack || state.photo);
+  gen.textContent = busy
+    ? "Drawing…"
+    : hasJack && !state.photoIsNew
+    ? "Generate the whole book (all pages)"
+    : "Generate the whole book";
+  $("makeJack").disabled = busy || !state.photo;
 
   document.querySelectorAll(".page-card").forEach((card) => {
     const id = card.dataset.id;
-    const gen = card.querySelector(".gen");
-    const fix = card.querySelector(".fix");
+    const has = Boolean(state.book.pages[id]);
+    const g = card.querySelector(".gen");
+    g.disabled = busy || !hasJack;
+    g.textContent = `${has ? "Regenerate" : "Generate"} page ${state.story.find((p) => p.id === id)?.number}`;
     const fixText = card.querySelector(".fix-text");
-    if (!gen.dataset.busy) gen.disabled = !state.reference;
-    fixText.disabled = !state.images[id] || !state.reference;
-    if (!fix.dataset.busy) fix.disabled = fixText.disabled || !fixText.value.trim();
+    fixText.disabled = busy || !has;
+    card.querySelector(".fix").disabled = fixText.disabled || !fixText.value.trim();
   });
 
-  const missing = state.pages.filter((p) => !state.images[p.id]).map((p) => p.number);
+  const missing = state.story.filter((p) => !state.book.pages[p.id]).map((p) => p.number);
   const name = $("childName").value.trim();
   const dl = $("downloadPdf");
-  if (!dl.dataset.busy) dl.disabled = missing.length > 0 || !name;
+  if (!dl.dataset.busy) dl.disabled = busy || missing.length > 0 || !name || !hasJack;
   $("bookStatus").textContent = missing.length
     ? `Still to generate: page ${missing.join(", ")}.`
     : !name
     ? "Enter the child's name (step 1) for the About Me page."
-    : `Ready: ${state.pages.length} pages + About Me.`;
+    : `Ready: ${state.story.length} pages + About Me.`;
 }
-["childName", "childAge", "childFavorites", "childAbout"].forEach((id) => $(id).addEventListener("input", refresh));
 
-// ---------------------------------------------------------------- PDF
+// ================================================================ PDF
 // The image model never draws text. The story text is drawn HERE, in the PDF layer.
-const PAGE_W = 792; // points (11 in) — 3:2 landscape, matches the 1536x1024 art
+const PAGE_W = 792; // points (11 in): 3:2 landscape, matches the 1536x1024 art
 const PAGE_H = 528; // points (7.33 in)
 
-// Big PNGs -> JPEG keeps the PDF small enough to download and share.
-function toJpeg(dataUrl, quality = 0.9) {
+function toJpeg(src, quality = 0.9) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
@@ -281,8 +639,8 @@ function toJpeg(dataUrl, quality = 0.9) {
       c.getContext("2d").drawImage(img, 0, 0);
       resolve(c.toDataURL("image/jpeg", quality));
     };
-    img.onerror = reject;
-    img.src = dataUrl;
+    img.onerror = () => reject(new Error("couldn't load an image"));
+    img.src = src;
   });
 }
 
@@ -303,11 +661,10 @@ function drawStoryText(doc, page) {
   const panelW = Math.min(PAGE_W - 80, Math.max(...lines.map((l) => doc.getTextWidth(l))) + 60);
   const panelH = textH + 26;
   const panelX = (PAGE_W - panelW) / 2;
-  // Hug the page edge (top or bottom) instead of centering, so the panel covers as little art as possible.
+  // Hug the page edge (top or bottom) so the panel covers as little art as possible.
   const EDGE = 18;
   const panelY = position === "top" ? EDGE : PAGE_H - EDGE - panelH;
 
-  // Soft panel behind the text so it reads on any art.
   doc.saveGraphicsState();
   doc.setGState(new doc.GState({ opacity: tone === "dark" ? 0.5 : 0.72 }));
   if (tone === "dark") doc.setFillColor(10, 12, 30);
@@ -320,7 +677,6 @@ function drawStoryText(doc, page) {
   const firstBaseline = panelY + 13 + fontSize * 0.95;
   lines.forEach((line, i) => doc.text(line, PAGE_W / 2, firstBaseline + i * lineH, { align: "center" }));
 
-  // Page number
   doc.setFont("times", "normal");
   doc.setFontSize(11);
   const corner = position === "bottom" ? 18 : PAGE_H - 12;
@@ -336,10 +692,9 @@ async function drawAboutMe(doc) {
   doc.setFillColor(246, 241, 228);
   doc.rect(0, 0, PAGE_W, PAGE_H, "F");
 
-  // The child as Jack (the reference image), 2:3 portrait
   const imgH = PAGE_H - 80;
   const imgW = (imgH * 2) / 3;
-  doc.addImage(await toJpeg(state.reference), "JPEG", 40, 40, imgW, imgH);
+  doc.addImage(await toJpeg(state.book.reference.url), "JPEG", 40, 40, imgW, imgH);
 
   const x = 40 + imgW + 40;
   const maxW = PAGE_W - x - 40;
@@ -387,36 +742,67 @@ async function drawAboutMe(doc) {
 
 $("downloadPdf").addEventListener("click", async () => {
   const btn = $("downloadPdf");
-  setBusy(btn, true, "Building PDF…");
+  btn.dataset.busy = "1";
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = "Building PDF…";
   try {
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: [PAGE_W, PAGE_H] });
     doc.setProperties({ title: "Jack and the Beanstalk", subject: `Starring ${$("childName").value.trim()}` });
-    for (const [i, page] of state.pages.entries()) {
+    for (const [i, page] of state.story.entries()) {
       if (i > 0) doc.addPage([PAGE_W, PAGE_H], "landscape");
-      doc.addImage(await toJpeg(state.images[page.id]), "JPEG", 0, 0, PAGE_W, PAGE_H); // full bleed
+      doc.addImage(await toJpeg(state.book.pages[page.id].url), "JPEG", 0, 0, PAGE_W, PAGE_H); // full bleed
       drawStoryText(doc, page);
     }
     doc.addPage([PAGE_W, PAGE_H], "landscape");
     await drawAboutMe(doc);
     doc.save("JackAndTheBeanstalk.pdf");
+    api("POST", `/api/books/${state.book.id}/events`, { json: { type: "pdf_downloaded" } }).catch(() => {});
   } catch (err) {
     $("bookStatus").textContent = `Couldn't build the PDF: ${err.message}`;
   } finally {
-    setBusy(btn, false);
+    delete btn.dataset.busy;
+    btn.textContent = label;
     refresh();
   }
 });
 
-// ---------------------------------------------------------------- start
+// ================================================================ start
 async function init() {
-  const [book, status] = await Promise.all([
+  const params = new URLSearchParams(location.search);
+  const login = params.get("login");
+  if (login) {
+    $("loginNotice").hidden = false;
+    $("loginNotice").textContent =
+      login === "cancelled" ? "Sign-in was cancelled." : "Sign-in didn't work. Please try again.";
+    params.delete("login");
+    history.replaceState(null, "", location.pathname + (params.toString() ? `?${params}` : ""));
+  }
+
+  const [story, status, me] = await Promise.all([
     fetch("/api/book").then((r) => r.json()),
     fetch("/api/status").then((r) => r.json()),
+    fetch("/api/me").then((r) => r.json()),
   ]);
+  state.story = story.pages;
+  state.status = { ...status, loginConfigured: me.loginConfigured };
   if (!status.keyConfigured && !status.mock) $("keyWarning").hidden = false;
   if (status.mock) $("mockWarning").hidden = false;
-  state.pages = book.pages;
-  renderPages();
+
+  if (!me.user) return showSignedOut();
+  state.me = me.user;
+  renderUserBar();
+
+  const bookId = Number(params.get("book"));
+  if (bookId) {
+    try {
+      await openBook(bookId);
+      return;
+    } catch {
+      /* fall through to the library */
+    }
+  }
+  openLibrary();
 }
 init();

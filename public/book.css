@@ -114,3 +114,124 @@ main.book {
 .busy-note { color: var(--muted); font-size: 0.9rem; align-self: center; }
 
 #downloadPdf { width: 100%; padding: 14px; font-size: 1.05rem; }
+
+/* ---------- signed-in user bar ---------- */
+.user-bar {
+  max-width: 1000px;
+  width: calc(100% - 32px);
+  margin: 8px auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+.user-bar .avatar { width: 32px; height: 32px; border-radius: 50%; }
+.user-bar .who { flex: 1; min-width: 0; }
+.user-bar .email { color: var(--muted); font-size: 0.88rem; }
+.user-bar .signout { color: var(--leaf); font-weight: 500; }
+
+/* ---------- sign in ---------- */
+.signin-card { text-align: center; padding: 40px 20px; }
+.signin-card h2 { margin-bottom: 6px; }
+.google-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 12px 22px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: #1f1f1f;
+  font-weight: 600;
+  text-decoration: none;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+.google-btn:hover { box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15); }
+.google-btn svg { width: 20px; height: 20px; }
+
+/* ---------- library ---------- */
+.lib-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; }
+.lib-head h2 { margin: 0; }
+.book-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 16px; }
+.book-card {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+}
+.book-card .thumb {
+  aspect-ratio: 4 / 3;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  background: var(--panel);
+  overflow: hidden;
+}
+.book-card .thumb img { width: 100%; height: 100%; object-fit: cover; object-position: top; }
+.book-card .meta { padding: 10px 12px 4px; display: grid; gap: 2px; }
+.book-card .sub { color: var(--muted); font-size: 0.85rem; }
+.card-actions { display: flex; gap: 8px; padding: 10px 12px 12px; margin-top: auto; }
+.card-actions button { flex: 1; padding: 8px; font-size: 0.9rem; }
+
+.activity { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 6px; font-size: 0.88rem; }
+.activity li { padding: 6px 10px; background: var(--bg); border-radius: 8px; }
+
+/* ---------- editor ---------- */
+.back { margin: 0 0 12px; display: flex; gap: 14px; align-items: center; }
+.saved { color: var(--muted); font-size: 0.88rem; }
+.hint.small { font-size: 0.82rem; margin-top: 8px; }
+button.big { padding: 14px; font-size: 1.05rem; }
+
+/* ---------- progress ---------- */
+.progress-panel {
+  margin-top: 20px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg);
+}
+.overall-label, .job-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+  font-size: 0.92rem;
+}
+.overall-label span, .job-label .state { color: var(--muted); }
+.bar { height: 10px; border-radius: 999px; background: var(--line); overflow: hidden; }
+.overall .bar { height: 14px; }
+.fill { height: 100%; width: 0; background: var(--leaf); border-radius: inherit; transition: width 0.25s linear; }
+.jobs { list-style: none; padding: 0; margin: 16px 0 0; display: grid; gap: 12px; }
+.job[data-status="running"] .fill {
+  background-image: linear-gradient(90deg, transparent 0, rgba(255, 255, 255, 0.35) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s linear infinite;
+  background-color: var(--leaf);
+}
+.job[data-status="failed"] .fill { background: #c0392b; }
+.job[data-status="failed"] .state { color: #c0392b; }
+.job[data-status="done"] .state { color: var(--leaf); font-weight: 600; }
+@keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+.drawing-badge {
+  display: none;
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--leaf);
+  color: #fff;
+  font-size: 0.82rem;
+  font-weight: 600;
+  z-index: 2;
+}
+.page-card.drawing .drawing-badge { display: block; }
+.page-card.drawing .page-frame img { opacity: 0.45; }
