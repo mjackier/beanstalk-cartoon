@@ -651,6 +651,15 @@ function drawStoryText(doc, page) {
   let fontSize = 30;
   doc.setFontSize(fontSize);
   let lines = doc.splitTextToSize(page.text, PAGE_W - 110);
+  if (lines.length === 2) {
+    // One shorter line covers less of the picture than two, if it still reads well at 26pt.
+    doc.setFontSize(26);
+    const one = doc.splitTextToSize(page.text, PAGE_W - 90);
+    if (one.length === 1) {
+      fontSize = 26;
+      lines = one;
+    } else doc.setFontSize(fontSize);
+  }
   if (lines.length > 2) {
     fontSize = 24;
     doc.setFontSize(fontSize);
@@ -677,10 +686,33 @@ function drawStoryText(doc, page) {
   const firstBaseline = panelY + 13 + fontSize * 0.95;
   lines.forEach((line, i) => doc.text(line, PAGE_W / 2, firstBaseline + i * lineH, { align: "center" }));
 
-  doc.setFont("times", "normal");
-  doc.setFontSize(11);
-  const corner = position === "bottom" ? 18 : PAGE_H - 12;
-  doc.text(String(page.number), PAGE_W - 22, corner, { align: "right" });
+  drawPageNumber(doc, page.number);
+}
+
+// Feedback: page numbers were too small to notice. Same spot on every page, About Me included:
+// a small cream disc in the bottom-right corner (outside the widest text panel).
+function drawPageNumber(doc, n) {
+  const r = 13;
+  const cx = PAGE_W - 24;
+  const cy = PAGE_H - 24;
+  doc.saveGraphicsState();
+  doc.setGState(new doc.GState({ opacity: 0.85 }));
+  doc.setFillColor(255, 250, 240);
+  doc.circle(cx, cy, r, "F");
+  doc.restoreGraphicsState();
+  doc.setFont("times", "bold");
+  doc.setFontSize(14);
+  doc.setTextColor(43, 35, 24);
+  doc.text(String(n), cx, cy + 4.8, { align: "center" });
+}
+
+// Feedback: "Favorite things" and "About me" said the same thing twice.
+// Leave out the favorites line when the About me text already mentions every favorite.
+function favoritesRepeated(favorites, about) {
+  const words = (t) => t.toLowerCase().replace(/[^a-z0-9\s,]/g, " ");
+  const items = words(favorites).split(/,|\band\b/).map((x) => x.trim()).filter(Boolean);
+  const text = words(about);
+  return items.length > 0 && items.every((item) => text.includes(item));
 }
 
 async function drawAboutMe(doc) {
@@ -731,13 +763,23 @@ async function drawAboutMe(doc) {
     y += 14;
   };
   field("Age", age);
-  field("Favorite things", favorites);
-  field("About me", about);
+  if (!favoritesRepeated(favorites, about)) field("Favorite things", favorites);
+  // The page title already says "About Me", so the child's own words go in without a second label.
+  if (about) {
+    doc.setFont("times", "italic");
+    doc.setFontSize(16);
+    doc.setTextColor(43, 42, 34);
+    doc.splitTextToSize(about, maxW).forEach((l) => {
+      doc.text(l, x, y);
+      y += 21;
+    });
+  }
 
   doc.setFont("times", "italic");
   doc.setFontSize(12);
   doc.setTextColor(109, 106, 92);
   doc.text(`Starring ${name} as Jack`, x, PAGE_H - 40);
+  drawPageNumber(doc, state.story.length + 1);
 }
 
 $("downloadPdf").addEventListener("click", async () => {

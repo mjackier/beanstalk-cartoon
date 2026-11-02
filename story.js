@@ -54,7 +54,7 @@ export const PAGES = [
     number: 2,
     ready: true,
     title: "The trade",
-    text: "Five magic beans, said the old man. For one cow.",
+    text: "“Five magic beans,” said the old man. “For one cow.”",
     jack:
       "Jack is shown in three-quarter view, turned toward the old man, curious and tempted. He wears exactly the same outfit as in the reference image.",
     scene:
@@ -63,18 +63,20 @@ export const PAGES = [
       "Jack holds Milky-White's rope in one hand; the cow stands right beside him.",
     cast: ["oldMan", "cow"],
     lighting: "Bright, clear midday light; fresh greens and warm browns.",
-    textArea: { position: "top", size: 0.25, tone: "light" },
+    // Feedback: with the text at the top, the panel covered Jack's head and the old man's hat
+    // (the model kept drawing heads up there). The bottom is road and grass, so the text goes there now.
+    textArea: { position: "bottom", size: 0.22, tone: "light" },
     composition:
-      "Wide shot from a slightly higher, farther-back camera: Jack, the old man, and the cow are shown full-body in the middle and lower part of the picture, " +
-      "and the tops of ALL their heads and hats are below the top third of the picture. " +
-      "The top third is only open, simple pale-blue sky with a few soft clouds: no heads, hats, faces, birds, trees, or details there, so story text can sit on it.",
+      "Wide shot from a slightly farther-back camera: Jack, the old man, and the cow are shown full-body, with their feet above the bottom fifth of the picture. " +
+      "The bottom fifth is only plain dirt road and short grass: no feet, faces, beans, or important details there, so story text can sit on it. " +
+      "Leave open sky above their heads.",
   },
   {
     id: "out-the-window",
     number: 3,
     ready: true,
     title: "Out the window",
-    text: "Beans! she cried. And out the window they went.",
+    text: "“Beans!” she cried. And out the window they went.",
     jack:
       "Jack stands in the open cottage doorway, surprised and upset. His head is tilted and turned toward the flying beans and his eyes are clearly looking AT the beans, " +
       "following them as they fall. Show his face in three-quarter view, lit by warm light from the doorway, so it is clearly recognizable while he watches the beans.",
