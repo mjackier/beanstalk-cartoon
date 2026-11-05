@@ -403,6 +403,75 @@ async function main() {
     }
   });
 
+  // ---- Temporary: measure image speed and rate limits on this account (admin only).
+  const isAdmin = (u) =>
+    u && (u.id === 1 || (process.env.ADMIN_EMAILS || "").split(",").map((s) => s.trim()).includes(u.email));
+  const benches = [];
+  app.post("/api/admin/bench", requireUser, requirePassword, async (req, res) => {
+    if (!isAdmin(req.user)) return res.status(403).json({ error: "Admins only." });
+    const { n = 4, model, quality = "low", fidelity, size = "1536x1024", vision = false } = req.body || {};
+    const fs = await import("node:fs/promises");
+    const photo = await fs.readFile("public/survey/photo.jpg");
+    const scene = await fs.readFile("public/survey/storybook-page-2.jpg");
+    const bench = { started: new Date().toISOString(), params: { n, model, quality, fidelity, size, vision }, calls: [] };
+    benches.push(bench);
+    res.json({ index: benches.length - 1 });
+    const oa = await import("./lib/openai.js");
+    const t0 = Date.now();
+    await Promise.all(
+      Array.from({ length: Math.min(Number(n), 30) }, async (_, i) => {
+        const s = Date.now();
+        try {
+          if (vision) {
+            const out = await oa.lookAt({
+              instructions: "Find every face. Return boxes as fractions of the image.",
+              images: [{ buffer: scene, mime: "image/jpeg" }],
+              schema: {
+                type: "object",
+                additionalProperties: false,
+                required: ["faces"],
+                properties: {
+                  faces: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      additionalProperties: false,
+                      required: ["label", "x", "y", "w", "h"],
+                      properties: { label: { type: "string" }, x: { type: "number" }, y: { type: "number" }, w: { type: "number" }, h: { type: "number" } },
+                    },
+                  },
+                },
+              },
+              model,
+            });
+            bench.calls.push({ i, ms: Date.now() - s, out });
+          } else {
+            const out = await oa.editImage({
+              images: [
+                { buffer: scene, mime: "image/jpeg" },
+                { buffer: photo, mime: "image/jpeg" },
+              ],
+              prompt:
+                "Replace the boy in the first image with the person in the second image, drawn in the same 3D animated style. Keep everything else exactly the same.",
+              size,
+              quality,
+              model,
+              fidelity,
+            });
+            bench.calls.push({ i, ms: Date.now() - s, bytes: out.buffer.length, rate: out.rate });
+          }
+        } catch (err) {
+          bench.calls.push({ i, ms: Date.now() - s, error: err.message, rate: err.rate });
+        }
+      })
+    );
+    bench.totalMs = Date.now() - t0;
+  });
+  app.get("/api/admin/bench", requireUser, (req, res) => {
+    if (!isAdmin(req.user)) return res.status(403).json({ error: "Admins only." });
+    res.json(benches);
+  });
+
   // Errors from multer (wrong file type, too large) and bad JSON
   app.use((err, _req, res, _next) => {
     res.status(err.status && err.status < 500 ? err.status : 400).json({ error: err.message || "Bad request." });
