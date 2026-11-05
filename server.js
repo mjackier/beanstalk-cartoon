@@ -319,7 +319,7 @@ app.post("/api/account/topup", requireUser, async (req, res) => {
     userId: req.user.id,
     email: req.user.email,
     successUrl: `${origin}/pay/return?session_id={CHECKOUT_SESSION_ID}`,
-    cancelUrl: `${origin}/#account`,
+    cancelUrl: `${origin}/#/account`,
   });
   await store.createTopup(req.user.id, session.id, cents);
   await store.logEvent({ userId: req.user.id, type: "checkout_started", detail: { cents } });
@@ -330,13 +330,13 @@ app.post("/api/account/topup", requireUser, async (req, res) => {
 app.get("/pay/return", requireUser, async (req, res) => {
   const id = String(req.query.session_id || "");
   const t = id && (await store.getTopupBySession(req.user.id, id));
-  if (!t) return res.redirect("/#account");
+  if (!t) return res.redirect("/#/account");
   const s = await stripe.getCheckoutSession(id);
   if (s.payment_status === "paid") {
     await creditSession(req.user, s);
-    return res.redirect(`/#account?funded=${s.amount_total}`);
+    return res.redirect(`/#/account?funded=${s.amount_total}`);
   }
-  res.redirect("/#account?funded=0");
+  res.redirect("/#/account?funded=0");
 });
 
 // A refund is requested (money reserved at once), then processed with Stripe straight away.

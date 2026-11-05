@@ -29,16 +29,38 @@ const pageId = (n) => `p${String(n).padStart(2, "0")}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Start a second identical request if the first is slow; whichever finishes first wins.
-async function hedged(fn, label) {
-  let settled = false;
-  const first = fn().finally(() => (settled = true));
-  const backup = sleep(HEDGE_MS).then(() => {
-    if (settled) return new Promise(() => {}); // never resolves: first already won
-    logger.info("hedge: started a backup image request", { label });
-    return fn();
-  });
-  return Promise.any([first, backup]).catch((agg) => {
-    throw agg.errors?.[0] || agg;
+// Fails as soon as every request that was started has failed (never waits for nothing).
+function hedged(fn, label) {
+  return new Promise((resolve, reject) => {
+    let done = false;
+    let started = 0;
+    let failures = 0;
+    const run = () => {
+      started++;
+      fn().then(
+        (v) => {
+          if (!done) {
+            done = true;
+            clearTimeout(timer);
+            resolve(v);
+          }
+        },
+        (err) => {
+          failures++;
+          if (!done && failures === started) {
+            done = true;
+            clearTimeout(timer);
+            reject(err);
+          }
+        }
+      );
+    };
+    const timer = setTimeout(() => {
+      if (done) return;
+      logger.info("hedge: started a backup image request", { label });
+      run();
+    }, HEDGE_MS);
+    run();
   });
 }
 
