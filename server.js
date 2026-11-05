@@ -407,7 +407,7 @@ async function main() {
   const isAdmin = (u) =>
     u && (u.id === 1 || (process.env.ADMIN_EMAILS || "").split(",").map((s) => s.trim()).includes(u.email));
   const benches = [];
-  app.post("/api/admin/bench", requireUser, requirePassword, async (req, res) => {
+  app.post("/api/admin/bench", requireUser, async (req, res) => {
     if (!isAdmin(req.user)) return res.status(403).json({ error: "Admins only." });
     const { n = 4, model, quality = "low", fidelity, size = "1536x1024", vision = false } = req.body || {};
     const fs = await import("node:fs/promises");
