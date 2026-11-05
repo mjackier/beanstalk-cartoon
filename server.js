@@ -416,6 +416,29 @@ async function main() {
     const bench = { started: new Date().toISOString(), params: { n, model, quality, fidelity, size, vision }, calls: [] };
     benches.push(bench);
     res.json({ index: benches.length - 1 });
+    if (req.body?.cpu) {
+      const t = Date.now();
+      const im = await import("./lib/images.js");
+      const th = im.thumbnail(scene);
+      bench.thumbMs = Date.now() - t;
+      const { createRequire } = await import("node:module");
+      globalThis.self = globalThis;
+      globalThis.window = globalThis;
+      const { jsPDF } = createRequire(import.meta.url)("./vendor/jspdf/jspdf.umd.min.cjs");
+      const t2 = Date.now();
+      const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: [792, 528] });
+      for (let i = 0; i < 20; i++) {
+        if (i) doc.addPage([792, 528], "landscape");
+        doc.addImage(new Uint8Array(scene), "JPEG", 0, 0, 792, 528, `img${i}`, "NONE");
+        doc.text("Hello world " + i, 40, 40);
+      }
+      const out = Buffer.from(doc.output("arraybuffer"));
+      bench.pdfMs = Date.now() - t2;
+      bench.pdfBytes = out.length;
+      bench.thumbBytes = th?.length;
+      bench.totalMs = Date.now() - t;
+      return;
+    }
     const oa = await import("./lib/openai.js");
     const t0 = Date.now();
     await Promise.all(
