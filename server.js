@@ -381,7 +381,16 @@ app.get("/api/admin/state", requireUser, requireAdmin, async (_req, res) => {
       title: STORIES[id].title,
       characters: chars
         .filter((c) => c.story === id)
-        .map((c) => ({ key: c.key, name: c.name, description: c.description, hero: c.is_hero, image: c.has_image ? `/api/admin/characters/${id}/${c.key}?v=${c.v}` : null })),
+        .map((c) => ({
+          key: c.key,
+          name: c.name,
+          description: c.description,
+          hero: c.is_hero,
+          image: c.has_image ? `/api/admin/characters/${id}/${c.key}?v=${c.v}` : null,
+          bytes: c.bytes,
+          hash: c.hash,
+          meta: c.meta,
+        })),
       scenes: TEMPLATE.map((slot, i) => {
         const s = scenes.find((x) => x.story === id && x.page_no === slot.n);
         return {
@@ -429,6 +438,16 @@ for (const b of await store.takeInterruptedBooks()) {
       ref: `autorefund:${rows[0].id}`,
     });
   }
+}
+
+// Render's free plan sleeps after 15 idle minutes, and waking up takes 30-60 s, which would break
+// "page load near-instant". A request to our own public address every 10 minutes counts as
+// traffic and keeps the site awake (one always-on service fits in the free 750 hours/month).
+const SELF_URL = process.env.KEEP_AWAKE_URL || process.env.RENDER_EXTERNAL_URL;
+if (SELF_URL && process.env.KEEP_AWAKE !== "0") {
+  setInterval(() => {
+    fetch(`${SELF_URL.replace(/\/$/, "")}/api/health`, { signal: AbortSignal.timeout(15000) }).catch(() => {});
+  }, 10 * 60 * 1000).unref();
 }
 
 app.listen(PORT, () => {
