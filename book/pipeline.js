@@ -10,7 +10,7 @@
 import { STORIES } from "./stories.js";
 import { TEMPLATE } from "./template.js";
 import { characterPrompt, scenePrompt, heroPortraitPrompt, heroSwapPrompt } from "./prompts.js";
-import { checkImage, verdict } from "./check.js";
+import { checkImage, verdict, checkCharacter } from "./check.js";
 import { buildBookPdf } from "./pdf.js";
 import { editImage, generateImage } from "../lib/openai.js";
 import { thumbnail } from "../lib/images.js";
@@ -92,10 +92,37 @@ export function createPipeline(store) {
   async function drawCharacter(storyId, key) {
     const story = STORIES[storyId];
     const ch = (await bible(storyId))[key];
-    const prompt = characterPrompt(story, ch);
-    const out = await generateImage({ prompt, size: "1024x1536", quality: SCENE_QUALITY() });
-    await store.saveCharacterImage(storyId, key, { data: out.buffer, mime: out.mime, thumb: thumbnail(out.buffer, 240), prompt });
-    adminLog("character drawn", { story: storyId, key });
+    const attempts = [];
+    for (let a = 1; a <= MAX_GENERATIONS; a++) {
+      const notes = attempts.at(-1)?.fails || [];
+      const prompt = characterPrompt(story, ch) + (notes.length ? `\nFIX THESE PROBLEMS FROM THE LAST ATTEMPT: ${notes.join("; ")}.` : "");
+      let out;
+      try {
+        out = await generateImage({ prompt, size: "1024x1536", quality: SCENE_QUALITY() });
+      } catch (err) {
+        adminLog("character attempt failed", { story: storyId, key, attempt: a, error: err.message });
+        continue; // e.g. a false positive from the safety system: just try again
+      }
+      let v;
+      try {
+        v = await checkCharacter({ image: out.buffer, description: ch.description });
+      } catch (err) {
+        v = { pass: true, fails: [], rank: 0, check: { error: err.message } };
+      }
+      attempts.push({ buffer: out.buffer, prompt, ...v });
+      adminLog("character attempt", { story: storyId, key, attempt: a, pass: v.pass, fails: v.fails });
+      if (v.pass) break;
+    }
+    if (!attempts.length) throw new Error("all 3 attempts were refused");
+    const best = attempts.find((x) => x.pass) || attempts.reduce((x, y) => (y.rank > x.rank ? y : x));
+    await store.saveCharacterImage(storyId, key, {
+      data: best.buffer,
+      mime: "image/jpeg",
+      thumb: thumbnail(best.buffer, 240),
+      prompt: best.prompt,
+      meta: { pass: best.pass, fails: best.fails, attempts: attempts.length, check: best.check },
+    });
+    adminLog("character drawn", { story: storyId, key, pass: best.pass });
   }
 
   // ------------------------------------------------------------ scenes

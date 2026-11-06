@@ -29,7 +29,7 @@ export const STORIES = {
       mother: {
         name: "Jack's mother",
         description:
-          "Jack's mother: a slim, kind woman in her thirties with warm brown hair in a low bun, a faded blue dress with rolled-up sleeves and a cream apron.",
+          "Jack's mother: a kind, hard-working village mother in her thirties with warm brown hair tied in a bun, wearing a long faded-blue peasant dress with rolled-up sleeves and a cream apron.",
       },
       oldMan: {
         name: "The old man",
@@ -222,7 +222,7 @@ export const STORIES = {
       mother: {
         name: "Little Red's mother",
         description:
-          "Little Red's mother: a woman in her thirties with curly auburn hair tied back, a sage-green dress and a flour-dusted white apron.",
+          "Little Red's mother: a cheerful village mother in her thirties with curly auburn hair tied back, wearing a long sage-green dress and a white baking apron.",
       },
       grandmother: {
         name: "Grandmother",

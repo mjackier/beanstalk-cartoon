@@ -109,3 +109,33 @@ export function verdict(kind, c, { needsHero = true } = {}) {
   const rank = (c.score || 0) + (needsHero && kind !== "scene" ? (c.likeness || 0) * 0.6 : 0) - fails.length * 2;
   return { pass: fails.length === 0, fails, rank };
 }
+
+// Bible images: is this really a clean reference sheet of the character described?
+const SHEET = {
+  type: "object",
+  additionalProperties: false,
+  required: ["is_character", "single", "matches", "text_in_image", "problems"],
+  properties: {
+    is_character: { type: "boolean", description: "a finished illustration of the character, not a placeholder, blank or broken image" },
+    single: { type: "boolean" },
+    matches: { type: "integer", description: "0-10 how well it matches the description" },
+    text_in_image: { type: "boolean" },
+    problems: { type: "array", items: { type: "string" } },
+  },
+};
+
+export async function checkCharacter({ image, description }) {
+  const c = await lookAt({
+    name: "sheet_check",
+    instructions: `Check this character reference sheet for a children's picture book. It should show exactly one character, full figure, on a plain background, matching: ${description}. Problems: under 15 words each.`,
+    images: [{ buffer: image, mime: "image/jpeg", detail: "low" }],
+    schema: SHEET,
+    model: process.env.OPENAI_VISION_MODEL_SCENES || "gpt-4.1",
+  });
+  const fails = [];
+  if (!c.is_character) fails.push("draw the actual character, a finished illustration");
+  if (!c.single) fails.push("show only this one character");
+  if (c.text_in_image) fails.push("no text or letters");
+  if (c.matches < 7) fails.push(...(c.problems || []).slice(0, 3));
+  return { check: c, pass: fails.length === 0, fails, rank: (c.matches || 0) + (c.is_character ? 10 : 0) - fails.length };
+}
