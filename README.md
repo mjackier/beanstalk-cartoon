@@ -1,63 +1,99 @@
-# Beanstalk Me
+# Beanstalk Storybook
 
-Two apps in one Express server:
+A 20-page picture book starring your child, as a PDF, in under a minute.
+Two stories, **Jack and the Beanstalk** and **Little Red Riding Hood**, share one 20-page template.
+Live: https://beanstalk.jackier.xyz
 
-- **`/`**: homework 1. Upload or take a photo, cartoonify it, and see yourself in two Jack and the Beanstalk scenes.
-- **`/book.html`**: the storybook. Sign in with Google, make a book starring a child (pages 1–3 plus About Me), come back later and it's still there, download it as one PDF.
+## How a book is made
 
-## Accounts, saving, logging (homework 3)
+```
+once (admin page)                         per book (about 30–50 s after "Make the book")
+-----------------                         ---------------------------------------------
+character bible (DB)                      photo -> cartoon portrait of the child (starts while the
+  one reference image per character         form is still being filled in; checked, up to 3 tries)
+        |                                 $0.99 charged from the balance
+        v                                 all 20 pages at the same time:
+40 scenes (DB), 20 per story,               scene + portrait -> image edit puts the child into the scene
+  drawn from the bible images with          -> vision check -> redraw with the problems listed (max 3)
+  a stand-in hero, each checked               -> still failing after 3? keep the best-scoring one
+                                          text placed only where nothing important is (see below)
+                                          PDF built on the server, stored in the DB
+```
 
-- **Sign in with Google** (`lib/auth.js`): standard OAuth 2.0 code flow with a `state` check, written with Node's built-in `fetch` (no auth library). The session is a signed, HttpOnly cookie (`lib/session.js`, HMAC-SHA256 with `SESSION_SECRET`), valid 30 days.
-- **Database** (`lib/store.js`): Render Postgres. Tables: `users`, `books`, `images` (the Jack reference and each page, stored as JPEG), `events` (the activity log). Every query is scoped to the signed-in user, so nobody can see or fetch another user's book or images. Without `DATABASE_URL` it falls back to an in-memory store for local testing.
-- **The uploaded photo is never stored**, only the cartoon made from it.
-- **Logging** (`lib/log.js`): every API request is logged as one JSON line (method, path, status, ms, user id; never query strings or tokens), visible in Render's **Logs** tab. Generation, sign-in, book creation and PDF downloads are also saved in the `events` table and shown to each user under **Recent activity**.
-- **Parallel generation with progress**: "Generate the whole book" draws Jack first (the pages need him), then sends every page request at the same time. Each image has its own progress bar; the overall bar counts finished images. The model doesn't report progress, so bars move on an estimate learned from earlier images and jump to 100% when the image arrives. A failed page doesn't stop the others.
-- **Cheap testing**: `MOCK_IMAGES=1` skips OpenAI entirely; `OPENAI_IMAGE_QUALITY=low` keeps real tests cheap. Images are requested as JPEG (much smaller than PNG).
+- **Template** (`book/template.js`): 20 slots, each with a layout (`full`, `band`, `split-L`, `split-R`, `vignette`), where the art sits, where text may go, and the camera shot. Both stories fill the same 20 slots, so pacing and quality stay the same across stories.
+- **Stories** (`book/stories.js`): text, scene, what the hero does, which bible characters appear, and the must-see details of every page. Pronouns follow the child (`{he}` / `{his}`).
+- **Character bible** (`characters` table): name, description and a reference image for every character. Scenes are drawn *from those images*, so the cow, the giant or the wolf look the same on every page.
+- **Scenes** (`scenes` table): pre-generated once per story, so a book only needs one edit per page instead of drawing the whole page from nothing.
 
-## How the storybook works
+## Text never hides the story
 
-1. **One reference image.** The uploaded photo is turned into a single full-body image of the child as Jack, in his costume (`POST /api/book/character`).
-2. **One style string.** Every call uses the same `STYLE` constant from `story.js`:
-   *"Modern 3D animated feature film style: rounded forms, large expressive eyes, soft rim light."*
-3. **One page = one call.** Each page sends the reference image plus that page's prompt (`POST /api/book/page`). No loops, no retries.
-4. **Edit, don't regenerate.** "Edit this page" sends the existing page plus the reference to the image *edit* endpoint with a one-change instruction (`POST /api/book/fix`).
-5. **Text is never drawn by the model.** The story text is drawn in the PDF layer (`public/book.js`, jsPDF) on each page's quiet area: lower third, top sky, or dark grass.
-6. **PDF.** Full-bleed 3:2 pages in order, then About Me with the child's name and details. Downloaded as `JackAndTheBeanstalk.pdf`.
+This is decided by geometry in `book/layout.js`, not left to the image model:
+
+1. The vision check returns boxes for every face, every character and each must-see detail of the page.
+2. Most template layouts (`band`, `split`, `vignette`) put the text **off the picture**, so nothing can be covered.
+3. On full-bleed pages, the text panel is measured for the real text, then tried at top, bottom and middle, centred, left and right, wide and narrow. The first panel that touches no padded box is used. Faces get the widest safety margin.
+4. If no panel is clear, that page switches to the `band` layout: the picture shrinks and the text goes underneath.
+
+## Quality loop
+
+`book/check.js` sends each generated image, with the child's portrait, to a vision model. It answers in a fixed JSON schema:
+- whether the hero is there, the face is visible and the hero appears only once
+- likeness from 0 to 10
+- whether the head looks pasted on
+- whether the anatomy is OK and whether any text is drawn in the image
+- missing must-see details, a score from 0 to 10, and the boxes
+
+`verdict()` turns that into pass/fail with plain rules. A failure is redrawn with its problems added to the prompt, up to **3 generations** in total. If all three fail, the best-ranked one is kept. A retry that would push the book past the 60-second budget is skipped, and the best attempt so far is kept.
+
+## Speed
+
+- Measured on this account: 20 image edits at once take ~14 s typically, 33 s for the slowest. A vision check takes ~3.5 s.
+- Pages run in parallel. A slow image call gets an identical backup request after 24 s, and whichever finishes first wins.
+- The portrait is drawn as soon as the photo is chosen, while the name and About Me are still being typed.
+- The PDF is built on the server with vendored jsPDF in ~0.7 s and stored, so it can be downloaded again any time.
+- The page loads fast because there's no framework: one HTML, one CSS and one JS file, gzipped and cached, with fonts loading without blocking.
+- The progress bar names the stage ("Step 2 of 5: Putting Avi into all 20 pages · 12 of 20 done · 2 being redrawn"). Each page's thumbnail appears as soon as it passes.
+
+## Money (Stripe sandbox)
+
+- **Add funds:** Stripe Checkout in test mode (card `4242 4242 4242 4242`). Coming back, the server asks Stripe whether the session is paid, so the URL is never trusted, and credits it exactly once (`ledger.ref` is unique).
+- **Balance:** `users.balance_cents`, changed only together with a `ledger` row, in one transaction with a row lock.
+- **$0.99 per document:** charged when a book starts. If the book can't be finished, or the server restarts, it's refunded automatically.
+- **Refunds:** the user requests a refund of unspent money from a payment; the money is reserved, then the refund is processed with `POST /v1/refunds` (idempotent). If Stripe declines, the money goes back to the balance.
+- **History:** every credit and debit, with what caused it, the book it belongs to and the balance after.
+- The server refuses to run payments with anything but an `sk_test_` key.
+
+## Accounts and storage
+
+Google sign-in (OAuth code flow, signed HttpOnly cookie) and Render Postgres. The database stores:
+- users, books, the hero portrait and the 20 page images (with their check results)
+- the PDFs, the bible, the scenes, the ledger, top-ups, refunds and an event log
+
+Every query is scoped to the signed-in user. The uploaded photo is never stored.
 
 ## Files
 
-- `lib/auth.js`, `lib/session.js`, `lib/store.js`, `lib/log.js`: sign-in, sessions, database, logging.
-- `story.js`: the style string, the fixed cast descriptions, the page list (text, scene, text area), and the prompt builders. **Edit prompts here.** To add page 4, fill it in and set `ready: true`.
-- `server.js`: Express server and API routes. Reads the key from the environment only.
-- `prompt.js`: prompts for the homework 1 two-scene app.
-- `public/book.html`, `book.js`, `book.css`: the storybook UI and the PDF layer.
-- `public/vendor/jspdf.umd.min.js`: jsPDF 2.5.1 (MIT), bundled so the app doesn't depend on a CDN.
-- `to-do.md`: what still needs work.
-
-## Environment variables
-
-| Name | Purpose |
+| Path | What |
 |---|---|
-| `OPENAI_API_KEY` | Required. Never in code or in the repo. |
-| `OPENAI_IMAGE_MODEL` | e.g. `gpt-image-1.5` (default `gpt-image-1-mini`) |
-| `OPENAI_INPUT_FIDELITY` | `high` keeps faces closer to the reference (not supported by the mini model) |
-| `OPENAI_IMAGE_QUALITY` | `low` / `medium` / `high` (default `low`) |
-| `GENERATE_PASSWORD` | If set, generating images requires this password (checked on the server). Viewing the site stays open. Never put the password in code; this repo is public. |
-| `DATABASE_URL` | Render Postgres **Internal Database URL**. Without it, data is kept in memory only. |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | From Google Cloud Console → Google Auth Platform → Clients (Web application). Redirect URI: `https://<site>/auth/google/callback` |
-| `SESSION_SECRET` | Long random string that signs the login cookie. |
-| `MOCK_IMAGES` | `1` = don't call OpenAI; echo the input image back. For testing the pipeline and PDF for free. |
+| `server.js` | All routes |
+| `lib/http.js` | A ~200-line router on `node:http` (no Express) |
+| `lib/store.js` | Postgres schema and every query |
+| `lib/openai.js`, `lib/stripe.js` | API clients over `fetch` |
+| `lib/auth.js`, `lib/session.js` | Google sign-in and session cookies |
+| `lib/images.js` | JPEG thumbnails (vendored `jpeg-js`) |
+| `book/` | Template, stories, prompts, check, layout, pipeline, PDF |
+| `public/` | The app (`index.html`, `app.css`, `app.js`), privacy policy, survey page |
+| `vendor/` | jsPDF, jpeg-js and the Gentium Book Plus font (OFL), so there's nothing to download at run time |
+
+The only npm dependency is `pg`.
 
 ## Run locally
 
 ```bash
 npm install
-cp .env.example .env      # put your real key in .env (git-ignored)
-npm run dev
+cp .env.example .env              # fill in your own keys; .env is git-ignored
+git config core.hooksPath scripts/hooks   # blocks commits that contain a secret key
+npm run dev                       # http://localhost:3000
 ```
 
-Open http://localhost:3000/book.html
-
-## Deploy (Render)
-
-Build: `npm install` · Start: `npm start` · Set the variables above under **Environment**.
+Keys live only in `.env` locally and in Render's environment group in production.

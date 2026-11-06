@@ -52,7 +52,7 @@ const BOX_RULES =
   "Coordinates are fractions of the image: x and y are the top-left corner (0 = left/top, 1 = right/bottom), w and h the size. Be accurate.";
 
 // kind: "page" (hero edited into a scene) | "scene" (stand-in hero) | "portrait" (hero from photo)
-export async function checkImage({ kind, image, story, page, portrait, photo }) {
+export async function checkImage({ kind, image, story, page, portrait, photo, model }) {
   const images = [{ buffer: image, mime: "image/jpeg", detail: "high", label: "IMAGE TO CHECK:" }];
   let task;
   if (kind === "portrait") {
@@ -76,6 +76,8 @@ export async function checkImage({ kind, image, story, page, portrait, photo }) 
     instructions: `${task}\n${BOX_RULES}\nBe concise in problems (each under 15 words).`,
     images,
     schema: SCHEMA,
+    // Scenes are checked once, so they get the stronger model; per-book pages use the fast one.
+    model: model || (kind === "scene" ? process.env.OPENAI_VISION_MODEL_SCENES || "gpt-4.1" : undefined),
   });
   // Clamp boxes into the image.
   out.boxes = (out.boxes || [])
