@@ -1,427 +1,486 @@
+// Beanstalk Storybook server. No framework: lib/http.js is a ~200-line router on node:http.
+// Secrets (OpenAI, Stripe, Google, session, database) come only from environment variables.
 import crypto from "node:crypto";
-import express from "express";
-import multer from "multer";
-import OpenAI, { toFile } from "openai";
-import { buildPrompt, SCENES } from "./prompt.js";
-import { STYLE, READY_PAGES, getPage, buildCharacterPrompt, buildPagePrompt, buildFixPrompt } from "./story.js";
+import { createApp, jsonBody, readBody, HttpError } from "./lib/http.js";
 import { logger, requestLogger } from "./lib/log.js";
-import { createStore } from "./lib/store.js";
+import { createStore, InsufficientFunds } from "./lib/store.js";
 import { registerAuth, requireUser, loginConfigured } from "./lib/auth.js";
+import { hasKey } from "./lib/openai.js";
+import { sniffMime } from "./lib/images.js";
+import * as stripe from "./lib/stripe.js";
+import { STORIES, STORY_IDS } from "./book/stories.js";
+import { TEMPLATE, LAYOUTS } from "./book/template.js";
+import { createPipeline, PRICE_CENTS } from "./book/pipeline.js";
 
-const app = express();
-// Render sits behind a proxy; trust it so req.ip / req.protocol are the visitor's.
-app.set("trust proxy", 1);
 const PORT = process.env.PORT || 3000;
-
-// The key is read ONLY from the environment. It is never written in code.
-const API_KEY = process.env.OPENAI_API_KEY;
-const MODEL = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1-mini";
-const QUALITY = process.env.OPENAI_IMAGE_QUALITY || "low"; // low | medium | high
-const INPUT_FIDELITY = process.env.OPENAI_INPUT_FIDELITY || null; // "high" keeps faces closer (not on mini)
-// MOCK_IMAGES=1: don't call OpenAI, echo the input image back. Free testing of the whole pipeline.
-const MOCK = process.env.MOCK_IMAGES === "1";
-
-const openai = API_KEY ? new OpenAI({ apiKey: API_KEY }) : null;
-
-// Uploads stay in memory (never written to disk).
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 15 * 1024 * 1024 },
-  fileFilter: (_req, file, cb) => {
-    const ok = ["image/jpeg", "image/png", "image/webp"].includes(file.mimetype);
-    cb(ok ? null : new Error("Please upload a JPEG, PNG, or WebP image."), ok);
-  },
-});
+// A stray promise must never take the whole site down.
+process.on("unhandledRejection", (err) => logger.error("unhandled rejection", { error: err?.stack || String(err) }));
+const app = createApp({ trustProxy: true });
+const store = await createStore();
+const pipeline = createPipeline(store);
+await pipeline.seedBible();
 
 app.use(requestLogger);
-app.use(express.static("public"));
-app.use(express.json({ limit: "100kb" }));
+// Old addresses from earlier homework go to the new app.
+app.use((req, res, next) => (["/book.html", "/index.html"].includes(req.path) ? res.redirect("/", 301) : next()));
+app.static("public", { maxAge: 3600 });
+registerAuth(app, store);
 
-// ---------------------------------------------------------------------
-// Password for anything that costs money (image generation).
-// Lives ONLY in the GENERATE_PASSWORD environment variable (the repo is public).
-// ---------------------------------------------------------------------
+const money = (c) => `$${(c / 100).toFixed(2)}`;
+const isAdmin = (u) =>
+  Boolean(u) && (u.id === 1 || (process.env.ADMIN_EMAILS || "").split(",").map((s) => s.trim()).filter(Boolean).includes(u.email));
+
+// ------------------------------------------------------------------ generate password
+// Anything that spends real OpenAI money needs this password (it lives only in GENERATE_PASSWORD).
 const GENERATE_PASSWORD = process.env.GENERATE_PASSWORD || "";
-const failedAttempts = new Map(); // ip -> { count, since }
-const MAX_FAILS = 10;
-const FAIL_WINDOW_MS = 15 * 60 * 1000;
-
-function passwordMatches(given) {
-  const a = Buffer.from(String(given));
-  const b = Buffer.from(GENERATE_PASSWORD);
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
-}
-
+const failed = new Map();
 function requirePassword(req, res, next) {
-  if (!GENERATE_PASSWORD) return next(); // not configured: generation is open
-
-  const ip = req.ip;
+  if (!GENERATE_PASSWORD) return next();
   const now = Date.now();
-  const record = failedAttempts.get(ip);
-  if (record && now - record.since > FAIL_WINDOW_MS) failedAttempts.delete(ip);
-  if ((failedAttempts.get(ip)?.count || 0) >= MAX_FAILS) {
-    return res.status(429).json({ error: "Too many wrong passwords. Try again in 15 minutes.", needPassword: true });
-  }
-  if (passwordMatches(req.get("x-app-password") || "")) {
-    failedAttempts.delete(ip);
+  const rec = failed.get(req.ip);
+  if (rec && now - rec.since > 15 * 60 * 1000) failed.delete(req.ip);
+  if ((failed.get(req.ip)?.count || 0) >= 10) throw new HttpError(429, "Too many wrong passwords. Try again in 15 minutes.", { extra: { needPassword: true } });
+  const a = Buffer.from(String(req.get("x-app-password") || ""));
+  const b = Buffer.from(GENERATE_PASSWORD);
+  if (a.length === b.length && crypto.timingSafeEqual(a, b)) {
+    failed.delete(req.ip);
     return next();
   }
-  const r = failedAttempts.get(ip) || { count: 0, since: now };
-  r.count += 1;
-  failedAttempts.set(ip, r);
-  logger.warn("wrong generate password", { ip, attempts: r.count });
-  res.status(401).json({ error: "Wrong or missing password.", needPassword: true });
+  const r = failed.get(req.ip) || { count: 0, since: now };
+  r.count++;
+  failed.set(req.ip, r);
+  logger.warn("wrong generate password", { ip: req.ip, attempts: r.count });
+  throw new HttpError(401, "Wrong or missing password.", { extra: { needPassword: true } });
 }
-
 app.post("/api/check-password", requirePassword, (_req, res) => res.json({ ok: true }));
 
-// ---------------------------------------------------------------------
-// Image calls. Each function below makes exactly ONE OpenAI call: no loops,
-// no retries. Pages run in parallel because the browser sends one request
-// per page at the same time.
-// ---------------------------------------------------------------------
-const fidelityFor = (model) =>
-  INPUT_FIDELITY && !model.includes("mini") ? { input_fidelity: INPUT_FIDELITY } : {};
+// ------------------------------------------------------------------ status
+app.get("/api/health", async (_req, res) => {
+  await store.health();
+  res.json({ ok: true, storage: store.kind, login: loginConfigured, key: hasKey(), stripe: stripe.stripeMode() });
+});
 
-function sniffMime(buf) {
-  if (buf[0] === 0xff && buf[1] === 0xd8) return "image/jpeg";
-  if (buf[0] === 0x89 && buf[1] === 0x50) return "image/png";
-  if (buf.slice(8, 12).toString() === "WEBP") return "image/webp";
-  return "application/octet-stream";
-}
-const EXT = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" };
-
-// images: [{ buffer, mime }] -> { buffer, mime }
-async function editImage({ images, prompt, size }) {
-  if (MOCK) {
-    await new Promise((r) => setTimeout(r, 1500 + Math.random() * 2500)); // feel the progress bars
-    return { buffer: images[0].buffer, mime: images[0].mime };
-  }
-  if (!openai) throw Object.assign(new Error("The server has no API key yet."), { status: 503 });
-  const files = await Promise.all(
-    images.map((img, i) => toFile(img.buffer, `input-${i}.${EXT[img.mime] || "png"}`, { type: img.mime }))
-  );
-  const result = await openai.images.edit({
-    model: MODEL,
-    image: files.length === 1 ? files[0] : files,
-    prompt,
-    size,
-    quality: QUALITY,
-    n: 1,
-    output_format: "jpeg", // ~10x smaller than PNG: cheaper to store, faster to load
-    output_compression: 88,
-    ...fidelityFor(MODEL),
+app.get("/api/config", async (_req, res) => {
+  const scenes = await store.listScenes(null);
+  res.set("Cache-Control", "public, max-age=30");
+  res.json({
+    loginConfigured,
+    passwordRequired: Boolean(GENERATE_PASSWORD),
+    stripe: stripe.stripeMode(),
+    priceCents: PRICE_CENTS,
+    stories: STORY_IDS.map((id) => ({
+      id,
+      title: STORIES[id].title,
+      heroName: STORIES[id].heroName,
+      blurb: STORIES[id].blurb,
+      ready: scenes.filter((s) => s.story === id).length === TEMPLATE.length,
+      cover: scenes.find((s) => s.story === id && s.page_no === 1) ? `/api/stories/${id}/cover` : null,
+    })),
   });
-  const b64 = result.data?.[0]?.b64_json;
-  if (!b64) throw Object.assign(new Error("The image model returned no image."), { status: 502 });
-  return { buffer: Buffer.from(b64, "base64"), mime: "image/jpeg" };
+});
+
+// A story's first scene (with the stand-in hero) as its picture on the "choose a story" cards.
+app.get("/api/stories/:id/cover", async (req, res) => {
+  const scene = STORIES[req.params.id] && (await store.getScene(req.params.id, 1, true));
+  if (!scene) return res.status(404).end();
+  res.set("Content-Type", "image/jpeg").set("Cache-Control", "public, max-age=3600").send(scene.data);
+});
+
+// ------------------------------------------------------------------ books
+function img(row, thumb = true) {
+  return row ? `/api/images/${row.id}?v=${row.v}${thumb ? "&thumb=1" : ""}` : null;
 }
 
-function sendError(res, err, context = {}) {
-  const status = err?.status && err.status >= 400 && err.status < 600 ? err.status : 500;
-  logger.error("request failed", { ...context, status, error: err?.message });
-  res.status(status).json({ error: err?.message || "Something went wrong." });
+async function bookJson(book, userId) {
+  const images = await store.listImages(book.id);
+  const docs = await store.listDocuments(userId, book.id);
+  const hero = images.find((i) => i.kind === "hero" || i.kind === "reference");
+  const story = STORIES[book.story];
+  const pages = story
+    ? story.pages.map((p, i) => {
+        const row = images.find((x) => x.kind === "page" && x.page_id === `p${String(i + 1).padStart(2, "0")}`);
+        return {
+          n: i + 1,
+          layout: TEMPLATE[i].layout,
+          url: img(row, false),
+          thumb: img(row),
+          checked: row ? { pass: row.meta?.pass ?? true, generations: row.meta?.attempts?.length || 0, fromScene: Boolean(row.meta?.fromScene) } : null,
+        };
+      })
+    : [];
+  return {
+    id: book.id,
+    story: book.story,
+    storyTitle: story?.title || "Jack and the Beanstalk (3-page version)",
+    legacy: !story,
+    child_name: book.child_name,
+    child_age: book.child_age,
+    child_favorites: book.child_favorites,
+    child_about: book.child_about,
+    pronouns: book.pronouns,
+    status: book.status,
+    error: book.error,
+    stats: book.stats,
+    created_at: book.created_at,
+    updated_at: book.updated_at,
+    hero: hero ? { url: img(hero, false) } : null,
+    pages,
+    documents: docs.map((d) => ({ id: d.id, url: `/api/documents/${d.id}`, pages: d.pages, bytes: d.bytes, created_at: d.created_at })),
+    heroJob: pipeline.heroJob(book.id),
+    job: pipeline.bookJob(book.id),
+  };
 }
 
-// ---------------------------------------------------------------------
-// Homework 1: the two-scene page (unchanged; no login needed, password needed)
-// ---------------------------------------------------------------------
-app.get("/api/scenes", (_req, res) => res.json(SCENES));
+async function loadBook(req) {
+  const book = await store.getBook(req.user.id, Number(req.params.id));
+  if (!book) throw new HttpError(404, "Book not found.");
+  return book;
+}
 
-app.post("/api/generate", requirePassword, upload.single("photo"), async (req, res) => {
+app.get("/api/books", requireUser, async (req, res) => {
+  const books = await store.listBooks(req.user.id);
+  res.json(
+    books.map((b) => ({
+      id: b.id,
+      child_name: b.child_name,
+      story: b.story,
+      storyTitle: STORIES[b.story]?.title || "Jack and the Beanstalk (3-page version)",
+      legacy: !STORIES[b.story],
+      status: b.status,
+      page_count: b.page_count,
+      updated_at: b.updated_at,
+      thumb: b.cover_id ? `/api/images/${b.cover_id}?thumb=1` : b.hero_id ? `/api/images/${b.hero_id}?thumb=1` : null,
+      document: b.document_id ? `/api/documents/${b.document_id}` : null,
+    }))
+  );
+});
+
+app.post("/api/books", requireUser, async (req, res) => {
+  const body = await jsonBody(req);
+  if (!STORIES[body.story]) throw new HttpError(400, "Choose a story.");
+  const book = await store.createBook(req.user.id, body);
+  await store.logEvent({ userId: req.user.id, bookId: book.id, type: "book_created", detail: { story: book.story } });
+  res.status(201).json(await bookJson(book, req.user.id));
+});
+
+app.get("/api/books/:id", requireUser, async (req, res) => {
+  res.json(await bookJson(await loadBook(req), req.user.id));
+});
+
+// Light polling endpoint for the progress view.
+app.get("/api/books/:id/progress", requireUser, async (req, res) => {
+  const book = await loadBook(req);
+  res.json({ status: book.status, heroJob: pipeline.heroJob(book.id), job: pipeline.bookJob(book.id) });
+});
+
+app.patch("/api/books/:id", requireUser, async (req, res) => {
+  const body = await jsonBody(req);
+  if (body.story && !STORIES[body.story]) throw new HttpError(400, "Unknown story.");
+  const book = await store.updateBook(req.user.id, Number(req.params.id), body);
+  if (!book) throw new HttpError(404, "Book not found.");
+  res.json({ ok: true });
+});
+
+app.delete("/api/books/:id", requireUser, async (req, res) => {
+  if (pipeline.isRunning(Number(req.params.id))) throw new HttpError(409, "This book is still being made.");
+  if (!(await store.deleteBook(req.user.id, Number(req.params.id)))) throw new HttpError(404, "Book not found.");
+  await store.logEvent({ userId: req.user.id, bookId: Number(req.params.id), type: "book_deleted" });
+  res.json({ ok: true });
+});
+
+// The photo is sent as the raw request body (image/jpeg, png or webp). It is NOT stored:
+// only the cartoon portrait made from it is.
+app.post("/api/books/:id/photo", requireUser, requirePassword, async (req, res) => {
+  const book = await loadBook(req);
+  if (pipeline.isRunning(book.id)) throw new HttpError(409, "This book is being made right now.");
+  const buffer = await readBody(req, { limit: 12 * 1024 * 1024 });
+  const mime = sniffMime(buffer);
+  if (!["image/jpeg", "image/png", "image/webp"].includes(mime)) throw new HttpError(400, "Please use a JPEG, PNG or WebP photo.");
+  pipeline.startHero(book, { buffer, mime }, req.user.id);
+  await store.logEvent({ userId: req.user.id, bookId: book.id, type: "photo_added" });
+  res.json({ heroJob: pipeline.heroJob(book.id) });
+});
+
+// Make the book: charge $0.99, then run the pipeline. Progress via /progress.
+app.post("/api/books/:id/generate", requireUser, requirePassword, async (req, res) => {
+  const book = await loadBook(req);
+  const story = STORIES[book.story];
+  if (!story) throw new HttpError(400, "This is an older book; start a new one.");
+  if (pipeline.isRunning(book.id)) throw new HttpError(409, "This book is already being made.");
+  if (!book.child_name) throw new HttpError(400, "Enter the child's name first.");
+  if (!(await pipeline.storyReady(book.story))) throw new HttpError(503, "This story's scenes are still being prepared. Try again soon.");
+  const hj = pipeline.heroJob(book.id);
+  const hasHero = await store.getImageData(book.id, "hero", "");
+  if (!hasHero && (!hj || hj.status === "failed")) throw new HttpError(400, hj?.error ? `The photo didn't work: ${hj.error}` : "Add a photo first.");
+  let charge;
   try {
-    if (!req.file) return res.status(400).json({ error: "No photo uploaded." });
-    if (!SCENES[req.body.scene]) return res.status(400).json({ error: "Unknown scene." });
-    const { prompt, sceneSpec } = buildPrompt(req.body.scene, {
-      style: req.body.style,
-      exaggeration: req.body.exaggeration,
-      outline: req.body.outline,
-      palette: req.body.palette,
+    charge = await store.charge(req.user.id, PRICE_CENTS, {
+      kind: "document",
+      description: `Storybook PDF: "${story.title}" starring ${book.child_name}`,
+      book_id: book.id,
     });
-    const started = Date.now();
-    const out = await editImage({
-      images: [{ buffer: req.file.buffer, mime: req.file.mimetype }],
-      prompt,
-      size: "1024x1024",
-    });
-    logger.info("image generated", { kind: "scene", scene: req.body.scene, ms: Date.now() - started });
-    res.json({ image: `data:${out.mime};base64,${out.buffer.toString("base64")}`, caption: sceneSpec, prompt });
   } catch (err) {
-    sendError(res, err, { route: "generate" });
+    if (err instanceof InsufficientFunds) {
+      throw new HttpError(402, `A book costs ${money(PRICE_CENTS)} and your balance is ${money(err.balance)}. Add funds first.`, {
+        extra: { needFunds: true, balance: err.balance },
+      });
+    }
+    throw err;
+  }
+  pipeline.startBook({ book, user: req.user, charge });
+  res.json({ ok: true, balance: charge.balance_after, job: pipeline.bookJob(book.id) });
+});
+
+app.get("/api/images/:id", requireUser, async (req, res) => {
+  const row = await store.getImageForUser(req.user.id, Number(req.params.id), req.query.thumb === "1");
+  if (!row) return res.status(404).end();
+  res.set("Content-Type", row.mime).set("Cache-Control", "private, max-age=31536000, immutable").send(row.data);
+});
+
+app.get("/api/documents/:id", requireUser, async (req, res) => {
+  const doc = await store.getDocument(req.user.id, Number(req.params.id));
+  if (!doc) throw new HttpError(404, "Document not found.");
+  const name = doc.title.replace(/[^A-Za-z0-9 ,'-]/g, "").replace(/\s+/g, "-").slice(0, 80) || "storybook";
+  res
+    .set("Content-Type", "application/pdf")
+    .set("Content-Disposition", `${req.query.inline ? "inline" : "attachment"}; filename="${name}.pdf"`)
+    .set("Cache-Control", "private, max-age=86400")
+    .send(doc.data);
+  store.logEvent({ userId: req.user.id, bookId: null, type: "pdf_downloaded", detail: { documentId: doc.id } }).catch(() => {});
+});
+
+app.get("/api/activity", requireUser, async (req, res) => res.json(await store.recentEvents(req.user.id, 60)));
+
+// ------------------------------------------------------------------ money (Stripe test mode)
+const TOPUP_CHOICES = [500, 1000, 2000];
+
+// If someone paid but closed the tab before coming back, catch up on the next visit.
+async function syncPending(user) {
+  for (const t of await store.pendingTopups(user.id)) {
+    try {
+      const s = await stripe.getCheckoutSession(t.checkout_session);
+      if (s.payment_status === "paid") await creditSession(user, s);
+      else if (s.status === "expired") await store.markTopupExpired(t.id);
+    } catch (err) {
+      logger.warn("topup sync failed", { topupId: t.id, error: err.message });
+    }
+  }
+}
+
+async function creditSession(user, s) {
+  const pi = typeof s.payment_intent === "object" ? s.payment_intent : null;
+  const card = pi?.latest_charge?.payment_method_details?.card?.last4 || "";
+  const out = await store.markTopupPaid(user.id, s.id, {
+    paymentIntent: pi?.id || s.payment_intent,
+    amountCents: s.amount_total,
+    card,
+  });
+  if (out?.entry) {
+    logger.info("topup credited", { userId: user.id, cents: s.amount_total });
+    await store.logEvent({ userId: user.id, type: "funds_added", detail: { cents: s.amount_total } });
+  }
+  return out;
+}
+
+app.get("/api/account", requireUser, async (req, res) => {
+  if (stripe.stripeConfigured()) await syncPending(req.user);
+  const [user, ledger, topups, refunds] = await Promise.all([
+    store.getUser(req.user.id),
+    store.ledger(req.user.id),
+    store.listTopups(req.user.id),
+    store.listRefunds(req.user.id),
+  ]);
+  const open = (t) => refunds.filter((r) => r.topup_id === t.id && ["requested", "processing"].includes(r.status)).reduce((s, r) => s + r.amount_cents, 0);
+  res.json({
+    balance: user.balance_cents,
+    priceCents: PRICE_CENTS,
+    stripe: stripe.stripeMode(),
+    topupChoices: TOPUP_CHOICES,
+    ledger,
+    payments: topups.map((t) => ({
+      id: t.id,
+      amount: t.amount_cents,
+      refunded: t.refunded_cents,
+      refundable: Math.min(t.amount_cents - t.refunded_cents - open(t), user.balance_cents),
+      card: t.card,
+      paid_at: t.paid_at,
+    })),
+    refunds,
+  });
+});
+
+app.post("/api/account/topup", requireUser, async (req, res) => {
+  const body = await jsonBody(req);
+  const cents = Number(body.amount);
+  if (!TOPUP_CHOICES.includes(cents)) throw new HttpError(400, "Choose an amount.");
+  const origin = `${req.protocol}://${req.get("host")}`;
+  const session = await stripe.createCheckoutSession({
+    amountCents: cents,
+    userId: req.user.id,
+    email: req.user.email,
+    successUrl: `${origin}/pay/return?session_id={CHECKOUT_SESSION_ID}`,
+    cancelUrl: `${origin}/#/account`,
+  });
+  await store.createTopup(req.user.id, session.id, cents);
+  await store.logEvent({ userId: req.user.id, type: "checkout_started", detail: { cents } });
+  res.json({ url: session.url });
+});
+
+// Stripe sends the browser back here. We ask Stripe directly whether it was paid (never trust the URL).
+app.get("/pay/return", requireUser, async (req, res) => {
+  const id = String(req.query.session_id || "");
+  const t = id && (await store.getTopupBySession(req.user.id, id));
+  if (!t) return res.redirect("/#/account");
+  const s = await stripe.getCheckoutSession(id);
+  if (s.payment_status === "paid") {
+    await creditSession(req.user, s);
+    return res.redirect(`/#/account?funded=${s.amount_total}`);
+  }
+  res.redirect("/#/account?funded=0");
+});
+
+// A refund is requested (money reserved at once), then processed with Stripe straight away.
+app.post("/api/account/refunds", requireUser, async (req, res) => {
+  const body = await jsonBody(req);
+  const cents = Math.round(Number(body.amount) * 1) || 0;
+  if (cents <= 0) throw new HttpError(400, "Enter an amount to refund.");
+  const user = await store.getUser(req.user.id);
+  if (cents > user.balance_cents) throw new HttpError(400, `You can refund at most your unspent balance (${money(user.balance_cents)}).`);
+  const { refund, topup } = await store.requestRefund(req.user.id, Number(body.paymentId), cents, String(body.reason || "").slice(0, 200));
+  await store.logEvent({ userId: req.user.id, type: "refund_requested", detail: { refundId: refund.id, cents } });
+  logger.info("refund requested", { userId: req.user.id, refundId: refund.id, cents });
+
+  await store.setRefund(refund.id, { status: "processing" });
+  try {
+    const r = await stripe.createRefund({ paymentIntent: topup.payment_intent, amountCents: cents, refundId: refund.id, userId: req.user.id });
+    if (r.status === "failed" || r.status === "canceled") throw new Error(`Stripe marked the refund ${r.status}`);
+    await store.refundSucceeded(refund, r.id);
+    await store.logEvent({ userId: req.user.id, type: "refund_processed", detail: { refundId: refund.id, stripe: r.id, status: r.status } });
+    logger.info("refund processed", { userId: req.user.id, refundId: refund.id, stripeStatus: r.status });
+    res.json({ ok: true, status: "succeeded", stripeRefund: r.id, stripeStatus: r.status });
+  } catch (err) {
+    await store.refundFailed(refund, err.message);
+    logger.error("refund failed", { refundId: refund.id, error: err.message });
+    throw new HttpError(502, `Stripe couldn't process the refund: ${err.message}. The money is back in your balance.`);
   }
 });
 
-// ---------------------------------------------------------------------
-// Storybook: signed-in users, books saved in the database
-// ---------------------------------------------------------------------
-async function main() {
-  const store = await createStore();
-  registerAuth(app, store);
-
-  app.get("/api/status", (_req, res) => {
-    res.json({
-      keyConfigured: Boolean(API_KEY),
-      mock: MOCK,
-      model: MODEL,
-      quality: QUALITY,
-      inputFidelity: INPUT_FIDELITY,
-      passwordRequired: Boolean(GENERATE_PASSWORD),
-      loginConfigured,
-      storage: store.kind,
-    });
-  });
-
-  // Quick check after deploying: is the database reachable?
-  app.get("/api/health", async (_req, res) => {
-    try {
-      await store.health();
-      res.json({ ok: true, storage: store.kind, login: loginConfigured, key: Boolean(API_KEY) || MOCK });
-    } catch (err) {
-      res.status(500).json({ ok: false, storage: store.kind, error: err.message });
-    }
-  });
-
-  // The story's page list (text + where the text goes). Prompts stay on the server.
-  app.get("/api/book", (_req, res) => {
-    res.json({
-      style: STYLE,
-      pages: READY_PAGES.map(({ id, number, title, text, textArea }) => ({ id, number, title, text, textArea })),
-    });
-  });
-
-  const imageUrl = (img) => `/api/images/${img.id}?v=${img.v}`;
-
-  async function bookJson(book) {
-    const images = await store.listImages(book.id);
-    const ref = images.find((i) => i.kind === "reference");
-    const pages = {};
-    for (const img of images.filter((i) => i.kind === "page")) {
-      pages[img.page_id] = { url: imageUrl(img), prompt: img.prompt };
-    }
-    return {
-      id: book.id,
-      child_name: book.child_name,
-      child_age: book.child_age,
-      child_favorites: book.child_favorites,
-      child_about: book.child_about,
-      created_at: book.created_at,
-      updated_at: book.updated_at,
-      reference: ref ? { url: imageUrl(ref), prompt: ref.prompt } : null,
-      pages,
-    };
-  }
-
-  // Loads the book and checks it belongs to the signed-in user.
-  async function loadBook(req, res) {
-    const book = await store.getBook(req.user.id, Number(req.params.id));
-    if (!book) res.status(404).json({ error: "Book not found." });
-    return book;
-  }
-
-  async function logImage(req, book, kind, pageId, started, error) {
-    const detail = { kind, pageId, ms: Date.now() - started, model: MOCK ? "mock" : MODEL, quality: QUALITY };
-    if (error) detail.error = error.message;
-    logger[error ? "error" : "info"](error ? "image failed" : "image generated", {
-      userId: req.user.id,
-      bookId: book.id,
-      ...detail,
-    });
-    await store
-      .logEvent({ userId: req.user.id, bookId: book.id, type: error ? "image_failed" : "image_generated", detail })
-      .catch((e) => logger.error("event log failed", { error: e.message }));
-  }
-
-  app.get("/api/books", requireUser, async (req, res) => {
-    try {
-      const books = await store.listBooks(req.user.id);
-      res.json(
-        books.map((b) => ({
-          id: b.id,
-          child_name: b.child_name,
-          created_at: b.created_at,
-          updated_at: b.updated_at,
-          page_count: b.page_count,
-          total_pages: READY_PAGES.length,
-          thumbnail: b.reference_image_id ? `/api/images/${b.reference_image_id}?v=${b.reference_v}` : null,
-        }))
-      );
-    } catch (err) {
-      sendError(res, err, { route: "list books" });
-    }
-  });
-
-  app.post("/api/books", requireUser, async (req, res) => {
-    try {
-      const book = await store.createBook(req.user.id, req.body || {});
-      await store.logEvent({ userId: req.user.id, bookId: book.id, type: "book_created" });
-      logger.info("book created", { userId: req.user.id, bookId: book.id });
-      res.status(201).json(await bookJson(book));
-    } catch (err) {
-      sendError(res, err, { route: "create book" });
-    }
-  });
-
-  app.get("/api/books/:id", requireUser, async (req, res) => {
-    try {
-      const book = await loadBook(req, res);
-      if (book) res.json(await bookJson(book));
-    } catch (err) {
-      sendError(res, err, { route: "get book" });
-    }
-  });
-
-  app.patch("/api/books/:id", requireUser, async (req, res) => {
-    try {
-      const book = await store.updateBook(req.user.id, Number(req.params.id), req.body || {});
-      if (!book) return res.status(404).json({ error: "Book not found." });
-      res.json({ ok: true });
-    } catch (err) {
-      sendError(res, err, { route: "update book" });
-    }
-  });
-
-  app.delete("/api/books/:id", requireUser, async (req, res) => {
-    try {
-      const ok = await store.deleteBook(req.user.id, Number(req.params.id));
-      if (!ok) return res.status(404).json({ error: "Book not found." });
-      await store.logEvent({ userId: req.user.id, bookId: Number(req.params.id), type: "book_deleted" });
-      res.json({ ok: true });
-    } catch (err) {
-      sendError(res, err, { route: "delete book" });
-    }
-  });
-
-  // Step 1: photo -> ONE reference image of the child as Jack, saved with the book.
-  // The photo itself is NOT stored, only the cartoon.
-  app.post("/api/books/:id/character", requireUser, requirePassword, upload.single("photo"), async (req, res) => {
-    const book = await loadBook(req, res).catch((e) => sendError(res, e));
-    if (!book) return;
-    if (!req.file) return res.status(400).json({ error: "No photo uploaded." });
-    const started = Date.now();
-    try {
-      const prompt = buildCharacterPrompt();
-      const out = await editImage({ images: [{ buffer: req.file.buffer, mime: req.file.mimetype }], prompt, size: "1024x1536" });
-      const saved = await store.saveImage(book.id, "reference", "", out.buffer, sniffMime(out.buffer), prompt);
-      await logImage(req, book, "reference", null, started);
-      res.json({ url: imageUrl(saved), prompt });
-    } catch (err) {
-      await logImage(req, book, "reference", null, started, err);
-      sendError(res, err, { route: "character", bookId: book.id });
-    }
-  });
-
-  // Step 2: saved reference + page prompt -> one page. The browser calls this for
-  // every page at once, so pages generate in parallel.
-  app.post("/api/books/:id/pages/:pageId", requireUser, requirePassword, async (req, res) => {
-    const book = await loadBook(req, res).catch((e) => sendError(res, e));
-    if (!book) return;
-    const page = getPage(req.params.pageId);
-    if (!page) return res.status(400).json({ error: "Unknown page." });
-    const started = Date.now();
-    try {
-      const reference = await store.getImageData(book.id, "reference", "");
-      if (!reference) return res.status(400).json({ error: "Create Jack (the character reference) first." });
-      const prompt = buildPagePrompt(page);
-      const out = await editImage({ images: [{ buffer: reference.data, mime: reference.mime }], prompt, size: "1536x1024" });
-      const saved = await store.saveImage(book.id, "page", page.id, out.buffer, sniffMime(out.buffer), prompt);
-      await logImage(req, book, "page", page.id, started);
-      res.json({ url: imageUrl(saved), prompt });
-    } catch (err) {
-      await logImage(req, book, "page", page.id, started, err);
-      sendError(res, err, { route: "page", bookId: book.id, pageId: page.id });
-    }
-  });
-
-  // Step 3 (optional): edit a saved page ("same scene, one thing changed").
-  app.post("/api/books/:id/pages/:pageId/fix", requireUser, requirePassword, async (req, res) => {
-    const book = await loadBook(req, res).catch((e) => sendError(res, e));
-    if (!book) return;
-    const page = getPage(req.params.pageId);
-    if (!page) return res.status(400).json({ error: "Unknown page." });
-    const instruction = String(req.body?.instruction || "").trim().slice(0, 500);
-    if (!instruction) return res.status(400).json({ error: "Describe what to change." });
-    const started = Date.now();
-    try {
-      const [current, reference] = await Promise.all([
-        store.getImageData(book.id, "page", page.id),
-        store.getImageData(book.id, "reference", ""),
-      ]);
-      if (!current || !reference) return res.status(400).json({ error: "Generate this page first." });
-      const prompt = buildFixPrompt(page, instruction);
-      const out = await editImage({
-        images: [
-          { buffer: current.data, mime: current.mime },
-          { buffer: reference.data, mime: reference.mime },
-        ],
-        prompt,
-        size: "1536x1024",
-      });
-      const saved = await store.saveImage(book.id, "page", page.id, out.buffer, sniffMime(out.buffer), prompt);
-      await logImage(req, book, "page-edit", page.id, started);
-      res.json({ url: imageUrl(saved), prompt });
-    } catch (err) {
-      await logImage(req, book, "page-edit", page.id, started, err);
-      sendError(res, err, { route: "fix", bookId: book.id, pageId: page.id });
-    }
-  });
-
-  // Small client-side events worth logging (e.g. a PDF was downloaded).
-  const CLIENT_EVENTS = new Set(["pdf_downloaded"]);
-  app.post("/api/books/:id/events", requireUser, async (req, res) => {
-    try {
-      const book = await loadBook(req, res);
-      if (!book) return;
-      const type = String(req.body?.type || "");
-      if (!CLIENT_EVENTS.has(type)) return res.status(400).json({ error: "Unknown event." });
-      await store.logEvent({ userId: req.user.id, bookId: book.id, type });
-      logger.info(type, { userId: req.user.id, bookId: book.id });
-      res.json({ ok: true });
-    } catch (err) {
-      sendError(res, err, { route: "event" });
-    }
-  });
-
-  // The signed-in user's own activity log.
-  app.get("/api/activity", requireUser, async (req, res) => {
-    try {
-      res.json(await store.recentEvents(req.user.id, 50));
-    } catch (err) {
-      sendError(res, err, { route: "activity" });
-    }
-  });
-
-  // Images are only served to the user who owns the book.
-  app.get("/api/images/:id", requireUser, async (req, res) => {
-    try {
-      const img = await store.getImageForUser(req.user.id, Number(req.params.id));
-      if (!img) return res.status(404).end();
-      res.set("Content-Type", img.mime);
-      res.set("Cache-Control", "private, max-age=31536000, immutable"); // URL has ?v=, so it changes when the image does
-      res.send(img.data);
-    } catch (err) {
-      sendError(res, err, { route: "image" });
-    }
-  });
-
-  // Errors from multer (wrong file type, too large) and bad JSON
-  app.use((err, _req, res, _next) => {
-    res.status(err.status && err.status < 500 ? err.status : 400).json({ error: err.message || "Bad request." });
-  });
-
-  app.listen(PORT, () => {
-    logger.info("server started", {
-      port: PORT,
-      storage: store.kind,
-      login: loginConfigured,
-      key: Boolean(API_KEY),
-      mock: MOCK,
-      model: MODEL,
-      quality: QUALITY,
-    });
-  });
+// ------------------------------------------------------------------ admin (bible + scenes)
+function requireAdmin(req, _res, next) {
+  if (!isAdmin(req.user)) throw new HttpError(403, "Admins only.");
+  return next();
 }
 
-main().catch((err) => {
-  logger.error("startup failed", { error: err.message });
-  process.exit(1);
+app.get("/api/admin/state", requireUser, requireAdmin, async (_req, res) => {
+  const [chars, scenes] = await Promise.all([store.listCharacters(null), store.listScenes(null)]);
+  res.json({
+    running: pipeline.admin.running,
+    log: pipeline.admin.log.slice(-80),
+    stories: STORY_IDS.map((id) => ({
+      id,
+      title: STORIES[id].title,
+      characters: chars
+        .filter((c) => c.story === id)
+        .map((c) => ({
+          key: c.key,
+          name: c.name,
+          description: c.description,
+          hero: c.is_hero,
+          image: c.has_image ? `/api/admin/characters/${id}/${c.key}?v=${c.v}` : null,
+          bytes: c.bytes,
+          hash: c.hash,
+          meta: c.meta,
+        })),
+      scenes: TEMPLATE.map((slot, i) => {
+        const s = scenes.find((x) => x.story === id && x.page_no === slot.n);
+        return {
+          n: slot.n,
+          layout: slot.layout,
+          text: STORIES[id].pages[i].text,
+          image: s ? `/api/admin/scenes/${id}/${slot.n}?v=${s.v}` : null,
+          meta: s?.meta || null,
+        };
+      }),
+    })),
+  });
+});
+
+app.post("/api/admin/pregen", requireUser, requireAdmin, async (req, res) => {
+  const body = await jsonBody(req);
+  await pipeline.pregen({ story: body.story || null, what: body.what || "all", only: body.only || null, force: Boolean(body.force) });
+  res.json({ ok: true });
+});
+
+app.get("/api/admin/characters/:story/:key", requireUser, requireAdmin, async (req, res) => {
+  const c = await store.getCharacterImage(req.params.story, req.params.key, req.query.full !== "1");
+  if (!c) return res.status(404).end();
+  res.set("Content-Type", "image/jpeg").set("Cache-Control", "private, max-age=86400").send(c.data);
+});
+
+app.get("/api/admin/scenes/:story/:n", requireUser, requireAdmin, async (req, res) => {
+  const s = await store.getScene(req.params.story, Number(req.params.n), req.query.full !== "1");
+  if (!s) return res.status(404).end();
+  res.set("Content-Type", "image/jpeg").set("Cache-Control", "private, max-age=86400").send(s.data);
+});
+
+// Admin test book: same pipeline, made from the survey photo, not charged (it costs only OpenAI money).
+app.post("/api/admin/test-book", requireUser, requireAdmin, async (req, res) => {
+  const body = await jsonBody(req);
+  const story = STORIES[body.story] ? body.story : "jack";
+  const fs = await import("node:fs/promises");
+  const photo = await fs.readFile("public/survey/photo.jpg");
+  const book = await store.createBook(req.user.id, {
+    story,
+    child_name: body.name || "Mattan",
+    child_age: "8",
+    child_favorites: "soccer, pancakes",
+    child_about: "Admin test book.",
+    pronouns: "he",
+  });
+  const hero = pipeline.startHero(book, { buffer: photo, mime: "image/jpeg" }, req.user.id);
+  await hero.promise;
+  pipeline.startBook({ book, user: req.user, charge: null });
+  res.json({ id: book.id });
+});
+
+// Admin: what the checker and the layout decided for every page of any book.
+app.get("/api/admin/books/:id", requireUser, requireAdmin, async (req, res) => {
+  const imgs = await store.listImages(Number(req.params.id));
+  const { rows } = await store.q("SELECT id, user_id, story, child_name, status, stats FROM books WHERE id = $1", [Number(req.params.id)]);
+  res.json({ book: rows[0], job: pipeline.bookJob(Number(req.params.id)), images: imgs.map((i) => ({ kind: i.kind, page: i.page_id, meta: i.meta })) });
+});
+app.get("/api/admin/books", requireUser, requireAdmin, async (_req, res) => {
+  const { rows } = await store.q("SELECT id, user_id, story, child_name, status, stats, updated_at FROM books ORDER BY id DESC LIMIT 30");
+  res.json(rows);
+});
+
+// The template as JSON (the admin page draws it; handy for review too).
+app.get("/api/template", (_req, res) => res.json({ layouts: LAYOUTS, slots: TEMPLATE }));
+
+// ------------------------------------------------------------------ start
+// Books interrupted by a restart: mark failed and refund their $0.99.
+for (const b of await store.takeInterruptedBooks()) {
+  const { rows } = await store.q("SELECT id FROM ledger WHERE book_id = $1 AND kind = 'document' ORDER BY id DESC LIMIT 1", [b.id]);
+  if (rows[0]) {
+    await store.credit(b.user_id, PRICE_CENTS, {
+      kind: "auto_refund",
+      description: "Refund: the server restarted while your book was being made",
+      book_id: b.id,
+      ref: `autorefund:${rows[0].id}`,
+    });
+  }
+}
+
+// Render's free plan sleeps after 15 idle minutes, and waking up takes 30-60 s, which would break
+// "page load near-instant". A request to our own public address every 10 minutes counts as
+// traffic and keeps the site awake (one always-on service fits in the free 750 hours/month).
+const SELF_URL = process.env.KEEP_AWAKE_URL || process.env.RENDER_EXTERNAL_URL;
+if (SELF_URL && process.env.KEEP_AWAKE !== "0") {
+  setInterval(() => {
+    fetch(`${SELF_URL.replace(/\/$/, "")}/api/health`, { signal: AbortSignal.timeout(15000) }).catch(() => {});
+  }, 10 * 60 * 1000).unref();
+}
+
+app.listen(PORT, () => {
+  logger.info("server started", { port: PORT, login: loginConfigured, key: hasKey(), stripe: stripe.stripeMode(), mock: process.env.MOCK_IMAGES === "1" });
 });
