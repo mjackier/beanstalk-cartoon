@@ -162,8 +162,9 @@ export async function checkPanel({ shaded, keep }) {
     name: "panel_check",
     instructions:
       "The translucent RED rectangle shows where a block of story text will be printed on this picture-book illustration. " +
-      "Does the red rectangle cover ANY part (even a small part) of: any face or head (including hair, hats, ears and horns), any hand or paw, " +
-      `or these story details: ${keep.join("; ")}? Covering plain sky, clouds, grass, floor, walls or empty background is fine. Be strict.`,
+      "Does the red rectangle cover ANY part (even a small part) of any character or animal: face, head, hair, hat, hands, arms, legs, feet, " +
+      `shoes, tail or clothing? Or any of these story details: ${keep.join("; ")}? ` +
+      "Covering only plain sky, clouds, treetops, grass, floor, walls or empty background is fine. Be strict: if in doubt, it covers something.",
     images: [{ buffer: shaded, mime: "image/jpeg", detail: "high" }],
     schema: PANEL,
     model: process.env.OPENAI_VISION_MODEL_SCENES || "gpt-4.1",
