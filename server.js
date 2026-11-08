@@ -462,6 +462,16 @@ app.get("/api/admin/books/:id", requireUser, requireAdmin, async (req, res) => {
   const { rows } = await store.q("SELECT id, user_id, story, child_name, status, stats FROM books WHERE id = $1", [Number(req.params.id)]);
   res.json({ book: rows[0], job: pipeline.bookJob(Number(req.params.id)), images: imgs.map((i) => ({ kind: i.kind, page: i.page_id, meta: i.meta })) });
 });
+// Admin: the most recent OpenAI calls with their token usage and cost.
+app.get("/api/admin/calls", requireUser, requireAdmin, async (req, res) => {
+  const { rows } = await store.q(
+    `SELECT book_id, purpose, kind, model, page, attempt, usage, usd::float AS usd, estimated, ms, created_at
+       FROM api_calls WHERE ($1::int IS NULL OR book_id = $1) ORDER BY id DESC LIMIT 200`,
+    [req.query.book ? Number(req.query.book) : null]
+  );
+  res.json(rows);
+});
+
 app.get("/api/admin/books", requireUser, requireAdmin, async (_req, res) => {
   const { rows } = await store.q("SELECT id, user_id, story, child_name, status, stats, updated_at FROM books ORDER BY id DESC LIMIT 30");
   res.json(rows);
