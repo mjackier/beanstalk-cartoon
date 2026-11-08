@@ -107,7 +107,9 @@ export function verdict(kind, c, { needsHero = true } = {}) {
       if (c.pasted_on) fails.push("blend the hero's head into the scene's style and lighting");
     }
   }
-  if (c.missing?.length) fails.push(`show clearly: ${c.missing.join(", ")}`);
+  // A per-book page only changes the hero; the rest of the scene was already checked when the scene
+  // was drawn, so a redraw can't fix a missing background detail. Those are noted, not failed.
+  if (c.missing?.length && kind !== "page") fails.push(`show clearly: ${c.missing.join(", ")}`);
   if (c.forbidden?.length) fails.push(`remove: ${c.forbidden.join(", ")}`);
   if (c.score < 6) fails.push(...(c.problems || []).slice(0, 3));
   const rank = (c.score || 0) + (needsHero && kind !== "scene" ? (c.likeness || 0) * 0.6 : 0) - fails.length * 2;

@@ -194,7 +194,9 @@ export function createPipeline(store) {
     let candidates = fullPageCandidates(slot.prefer, measure);
     const tried = [];
     for (let i = 0; i < 6 && candidates.length; i++) {
-      const c = firstClear(candidates, scene.meta?.boxes || []);
+      // Pre-filter on faces and must-see objects only; the red-box look below is the real test
+      // (a caption over someone's legs or a stretch of floor is fine, over a face never).
+      const c = firstClear(candidates, (scene.meta?.boxes || []).filter((b) => b.kind !== "character"));
       if (!c) break;
       candidates = candidates.filter((x) => x.rect !== c.rect);
       const verdictPanel = await checkPanel({ shaded: shadeRect(scene.data, c.rect), keep: page.keep });
