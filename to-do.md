@@ -14,6 +14,17 @@ What still needs work in the storybook (homework 4: 20 pages, two stories, one t
 - [x] The name on the cover was lowercase ("mattan"). Names typed in lowercase are capitalised.
 - [x] The refund was hard to find, and it refunded my whole balance in one click. Added a "Request a refund" button and a confirm step.
 
+## From review-log.md run 1 (professor's storybook-review skill, 96/100)
+- [x] Every book lost money: $2.72 average API cost against the $0.99 price. Each page sent 10,885 image tokens at high input fidelity (~$0.107 a page). Switched book pages to low input fidelity (517 tokens, ~$0.024 a page); side-by-side tests showed the same scene and likeness.
+- [x] Little Red's hair changed between the photo's hair and the stand-in's bob. The edit now replaces the hair under the hood too, and the checker counts hair in likeness.
+- [x] The Account page said the bible and scenes cost "$0.00"; they were drawn before cost tracking. It now says "not tracked".
+- [ ] 12 of 14 full-page slots still put the text under the picture; redraw those scenes with clear sky.
+
+## From review-log.md run 2 (98/100)
+- [ ] The Account page's average cost ($1.41) still includes the two books made before the cost fix; books now cost about $0.53. Show the average for the current settings.
+- [ ] Little Red's hair under the hood is still longer than the child's on most pages (pp. 1, 4, 5, 8). Redraw the stand-in Red with short hair tucked into the hood.
+- [ ] Three Red pages needed a second try for likeness; try a higher-quality hero portrait.
+
 ## Still open (from the storybook-review result, see storybook-review.md)
 - [ ] Page 5 (the trade) is a crowded close-up and the cow is cut off. Redraw it as a wider shot.
 - [ ] Page numbers on the paper pages are very small.

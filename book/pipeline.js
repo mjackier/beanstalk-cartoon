@@ -20,9 +20,9 @@ import { logger } from "../lib/log.js";
 
 export const PRICE_CENTS = 99;
 const MAX_GENERATIONS = 3;
-const TARGET_MS = Number(process.env.BOOK_TARGET_MS || 56000); // finish (PDF ready) inside 60 s
-const EST_RETRY_MS = Number(process.env.EST_RETRY_MS || 19000); // one more generation + check
-const HEDGE_MS = Number(process.env.HEDGE_MS || 24000); // a slow image call gets a backup twin
+const TARGET_MS = Number(process.env.BOOK_TARGET_MS || 52000); // finish (PDF ready) well inside 60 s
+const EST_RETRY_MS = Number(process.env.EST_RETRY_MS || 15000); // one more low-fidelity generation + check
+const HEDGE_MS = Number(process.env.HEDGE_MS || 18000); // a slow image call gets a backup twin
 const PAGE_QUALITY = () => process.env.PAGE_QUALITY || process.env.OPENAI_IMAGE_QUALITY || "low";
 const SCENE_QUALITY = () => process.env.SCENE_QUALITY || "medium";
 const MOCK = () => process.env.MOCK_IMAGES === "1";
@@ -383,7 +383,9 @@ export function createPipeline(store) {
                         prompt,
                         size: "1536x1024",
                         quality: PAGE_QUALITY(),
-                        fidelity: "high",
+                        // Low input fidelity: 517 instead of 10,885 image-input tokens, about $0.024 instead of
+                        // $0.107 a page, with the same scene and likeness in side-by-side tests (review-log run 1, fix 1).
+                        fidelity: process.env.PAGE_FIDELITY || "low",
                         meter: { purpose: "page", bookId: book.id, userId: user.id, page: n, attempt: a },
                       }),
                     `page ${n}`

@@ -589,7 +589,8 @@ async function account(query = "") {
             a.costs.books
               ? `<p class="balance" style="font-size:34px">$${a.costs.avg.toFixed(2)}</p>
                  <p class="small">Average API cost per book over ${a.costs.books} book${a.costs.books === 1 ? "" : "s"} (image calls, redraws and vision checks), against the <strong>${money(a.priceCents)}</strong> price: about $${(a.priceCents / 100 - a.costs.avg).toFixed(2)} margin per book.</p>
-                 <p class="muted small">Cheapest $${a.costs.min.toFixed(2)}, most expensive $${a.costs.max.toFixed(2)}. Not included: the one-off $${a.costs.setupUsd.toFixed(2)} spent drawing the character bible and the 40 shared scenes.</p>`
+                 ${a.costs.recent?.books && a.costs.recent.books < a.costs.books ? `<p class="small">Last ${a.costs.recent.books} books: <strong>$${a.costs.recent.avg.toFixed(2)}</strong> each on average.</p>` : ""}
+                 <p class="muted small">Cheapest $${a.costs.min.toFixed(2)}, most expensive $${a.costs.max.toFixed(2)}. Not included: the one-off cost of drawing the character bible and the 40 shared scenes (${a.costs.setupTracked ? `$${a.costs.setupUsd.toFixed(2)} tracked so far` : "not tracked: they were drawn before cost tracking started"}).</p>`
               : `<p class="muted">No books made since cost tracking started.</p>`
           }
         </section>

@@ -35,3 +35,36 @@ Fix first:
 4. "One-off $0.00" setup cost on the Account page is wrong (Money, −1) → show "not tracked (drawn before cost tracking)".
 5. 12 of 14 full-page slots fall back to text under the picture, so the books look samey → redraw those scenes with real empty sky/floor for the caption.
 
+## Run 2 — 2026-11-08 — reviewer: self (Mattan + Claude) — browser: Claude's built-in browser
+Total 98 (was 96)
+PDF 38/40 · UI 20/20 · Money 20/20 · Engineering 20/20
+Little Red (story not demoed, new photo): upload 17:35:41 → PDF 17:36:13 (32 s; was 56 s)
+Jack (same photo): upload 17:38:15 → PDF 17:38:49 (34 s)
+Balance: 2.02 → fund 5.00 → 7.02 → generate 6.03 → generate 5.04 → refund $1.00 → 4.04 (shown without reload) → refund $4.00 → 0.04 → generate refused (402, "A book costs $0.99 and your balance is $0.04. Add funds first.") → 0.04; a refund larger than the unspent balance was refused
+History: +5.00 topup 17:34:10 · −0.99 Red 17:35:41 · −0.99 Jack 17:38:14 · −1.00 refund re_3UZef6D77uFrOgI51SjYuqsv 17:39:19 · −4.00 refund; sums to 0.04
+Avg cost per book: $0.53 for the 3 books made since the fix ($0.52 Red, $0.54 Jack, $0.56 test book); $1.41 over all 5 tracked books (price $0.99)
+Not measured: none
+
+Changed since run 1:
+- Fix 1 (cost): book pages now use low input fidelity: 517 instead of 10,885 image-input tokens, $0.024 instead of $0.107 a page. Measured side by side on pages 2, 11 and 16 first: same scene, same likeness. Books went from $2.25–3.18 to $0.52–0.56, now under the $0.99 price.
+- Fix 2 (hair): the edit prompt replaces the hair under the hood with the child's hair; the checker counts hair in likeness.
+- Fix 3 (speed): faster low-fidelity pages, backup request at 18 s, no redraw that would end after 52 s. Red went from 56 s to 32 s.
+- Fix 4: the Account page no longer claims the bible and scenes cost "$0.00"; it says they weren't tracked.
+
+Evidence:
+- Site opened signed-out in 0.28 s.
+- Both new PDFs: 22 pages (cover + 20 + About Me), same layout on the same page numbers; no text over any face or must-see detail on any page; text typeset (pdf.js extracts p.5 word for word).
+- Progress bar named every stage; thumbnails appeared one at a time with "try N of 3"; Red pages 2, 3 and 20 show "✓ try 2 of 3".
+- Sign out → sign in: balance kept, all 8 PDFs on the account download (200, %PDF).
+- 400 px: New book and the finished-book page both fit (scrollWidth 400); try counts visible.
+
+Deductions:
+- PDF −2: Little Red's hair is better but still chin-length under the hood on most pages (pp. 1, 4, 5, 8), while the portrait and p.16 show short hair.
+
+Fix first:
+1. The Account page's headline average ($1.41) mixes in the two books made before the cost fix; the current cost is $0.53. Show the average for books made with the current settings, so the cost-vs-price comparison is true (Money, misleading; 0 points but it's the number a reader trusts).
+2. Little Red's hair under the hood still runs longer than the child's (PDF, −2) → draw the stand-in Red with short hair tucked into the hood, so the edit has less to change.
+3. 12 of 14 full-page slots still put the text under the picture; redraw those scenes with real empty sky or floor for the caption.
+4. Three Red pages needed a second try for likeness → test whether a higher-quality hero portrait cuts redraws (time and cost).
+5. Page numbers on the paper pages are very small → larger.
+
