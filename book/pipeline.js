@@ -100,14 +100,14 @@ export function createPipeline(store) {
       const prompt = characterPrompt(story, ch) + (notes.length ? `\nFIX THESE PROBLEMS FROM THE LAST ATTEMPT: ${notes.join("; ")}.` : "");
       let out;
       try {
-        out = await generateImage({ prompt, size: "1024x1536", quality: SCENE_QUALITY() });
+        out = await generateImage({ prompt, size: "1024x1536", quality: SCENE_QUALITY(), meter: { purpose: "bible", story: storyId } });
       } catch (err) {
         adminLog("character attempt failed", { story: storyId, key, attempt: a, error: err.message });
         continue; // e.g. a false positive from the safety system: just try again
       }
       let v;
       try {
-        v = await checkCharacter({ image: out.buffer, description: ch.description });
+        v = await checkCharacter({ image: out.buffer, description: ch.description, meter: { purpose: "bible_check", story: storyId } });
       } catch (err) {
         v = { pass: true, fails: [], rank: 0, check: { error: err.message } };
       }
@@ -148,11 +148,11 @@ export function createPipeline(store) {
     for (let a = 1; a <= MAX_GENERATIONS; a++) {
       const prompt = scenePrompt(story, page, slot, refs, { retryNotes: notes });
       const out = images.length
-        ? await editImage({ images, prompt, size: "1536x1024", quality: SCENE_QUALITY(), fidelity: "high" })
-        : await generateImage({ prompt, size: "1536x1024", quality: SCENE_QUALITY() });
+        ? await editImage({ images, prompt, size: "1536x1024", quality: SCENE_QUALITY(), fidelity: "high", meter: { purpose: "scene", story: storyId, page: n } })
+        : await generateImage({ prompt, size: "1536x1024", quality: SCENE_QUALITY(), meter: { purpose: "scene", story: storyId, page: n } });
       let check;
       try {
-        check = await checkImage({ kind: "scene", image: out.buffer, story, page: pageSpec });
+        check = await checkImage({ kind: "scene", image: out.buffer, story, page: pageSpec, meter: { purpose: "scene_check", story: storyId, page: n } });
       } catch (err) {
         check = { error: err.message, boxes: [], score: 5, problems: [], missing: [] };
       }
@@ -199,7 +199,7 @@ export function createPipeline(store) {
       const c = firstClear(candidates, (scene.meta?.boxes || []).filter((b) => b.kind !== "character"));
       if (!c) break;
       candidates = candidates.filter((x) => x.rect !== c.rect);
-      const verdictPanel = await checkPanel({ shaded: shadeRect(scene.data, c.rect), keep: page.keep });
+      const verdictPanel = await checkPanel({ shaded: shadeRect(scene.data, c.rect), keep: page.keep, meter: { purpose: "caption_check", story: storyId, page: n } });
       tried.push({ zone: c.zone, align: c.align, wFrac: c.wFrac, clear: !verdictPanel.covers_something, covered: verdictPanel.covered });
       adminLog("caption spot", { story: storyId, n, zone: c.zone, align: c.align, clear: !verdictPanel.covers_something, covered: verdictPanel.covered });
       if (!verdictPanel.covers_something) {
@@ -269,11 +269,14 @@ export function createPipeline(store) {
         const prompt = heroPortraitPrompt({ retryNotes: notes });
         const out = MOCK()
           ? { buffer: photo.buffer }
-          : await hedged(() => editImage({ images: [photo], prompt, size: "1024x1024", quality: PAGE_QUALITY(), fidelity: "high" }), "hero");
+          : await hedged(
+              () => editImage({ images: [photo], prompt, size: "1024x1024", quality: PAGE_QUALITY(), fidelity: "high", meter: { purpose: "hero", bookId: book.id, userId, attempt: a } }),
+              "hero"
+            );
         job.status = "checking";
         let check;
         try {
-          check = await checkImage({ kind: "portrait", image: out.buffer, photo });
+          check = await checkImage({ kind: "portrait", image: out.buffer, photo, meter: { purpose: "hero_check", bookId: book.id, userId, attempt: a } });
         } catch (err) {
           check = { error: err.message, score: 6, likeness: 6, boxes: [] };
         }
@@ -381,6 +384,7 @@ export function createPipeline(store) {
                         size: "1536x1024",
                         quality: PAGE_QUALITY(),
                         fidelity: "high",
+                        meter: { purpose: "page", bookId: book.id, userId: user.id, page: n, attempt: a },
                       }),
                     `page ${n}`
                   );
@@ -402,7 +406,7 @@ export function createPipeline(store) {
             if (job.stage === "pages") job.stage = "check";
             let check;
             try {
-              check = await checkImage({ kind: "page", image: out.buffer, story, page: { ...page, n }, portrait: hero.data });
+              check = await checkImage({ kind: "page", image: out.buffer, story, page: { ...page, n }, portrait: hero.data, meter: { purpose: "page_check", bookId: book.id, userId: user.id, page: n, attempt: a } });
             } catch (err) {
               // The checker itself failed: keep the image, use the scene's boxes for layout.
               check = { error: err.message, boxes: scene.meta?.boxes || [], score: 6, likeness: 6, problems: [], missing: [] };
@@ -472,6 +476,7 @@ export function createPipeline(store) {
         failedChecks: job.pages.filter((p) => p.hero && p.pass === false).length,
         layoutFallbacks: plans.filter((p) => p.fallback).length,
         documentId: doc.id,
+        cost: await store.bookCost(book.id),
       };
       await store.setBookStatus(book.id, "ready", { stats });
       await store.logEvent({ userId: user.id, bookId: book.id, type: "document_generated", detail: stats });
