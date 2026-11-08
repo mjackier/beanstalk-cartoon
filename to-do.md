@@ -14,7 +14,10 @@ What still needs work in the storybook (homework 4: 20 pages, two stories, one t
 - [x] The name on the cover was lowercase ("mattan"). Names typed in lowercase are capitalised.
 - [x] The refund was hard to find, and it refunded my whole balance in one click. Added a "Request a refund" button and a confirm step.
 
-## Still open
+## Still open (from the storybook-review result, see storybook-review.md)
+- [ ] Page 5 (the trade) is a crowded close-up and the cow is cut off. Redraw it as a wider shot.
+- [ ] Page numbers on the paper pages are very small.
+- [ ] Little Red needed 4 likeness redraws in the test book.
 - [ ] Most full-page pictures now put the text under the picture, because the check is strict. Draw the full-page scenes with more empty sky so the text can stay on the picture.
 - [ ] Needs to be tested with more children with different facial features, and different hair / skin colors.
 - [ ] The mother should probably share physical features with the child, at least for some features, just like in real life.
