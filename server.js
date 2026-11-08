@@ -462,6 +462,59 @@ app.get("/api/admin/books/:id", requireUser, requireAdmin, async (req, res) => {
   const { rows } = await store.q("SELECT id, user_id, story, child_name, status, stats FROM books WHERE id = $1", [Number(req.params.id)]);
   res.json({ book: rows[0], job: pipeline.bookJob(Number(req.params.id)), images: imgs.map((i) => ({ kind: i.kind, page: i.page_id, meta: i.meta })) });
 });
+// Admin experiment: one page edited with different input settings, to compare cost and picture.
+const experiments = [];
+app.post("/api/admin/experiment", requireUser, requireAdmin, async (req, res) => {
+  const body = await jsonBody(req);
+  const { editImage } = await import("./lib/openai.js");
+  const { heroSwapPrompt } = await import("./book/prompts.js");
+  const { resize, decode, encode } = await import("./lib/images.js");
+  const story = STORIES[body.story || "jack"];
+  const n = Number(body.page || 2);
+  const scene = await store.getScene(story.id, n);
+  const hero = await store.getImageData(Number(body.book), "hero", "");
+  const chars = await pipeline.bible(story.id);
+  const small = (buf, w) => (w ? encode(resize(decode(buf), w), 88) : buf);
+  const runId = experiments.length;
+  experiments.push({ started: Date.now(), variants: [] });
+  res.json({ runId });
+  await Promise.all(
+    (body.variants || []).map(async (v, i) => {
+      const t0 = Date.now();
+      try {
+        const out = await editImage({
+          images: [
+            { buffer: small(scene.data, v.sceneWidth), mime: "image/jpeg" },
+            { buffer: small(hero.data, v.portraitWidth), mime: "image/jpeg" },
+          ],
+          prompt: heroSwapPrompt(story, story.pages[n - 1], chars[story.heroKey].description),
+          size: "1536x1024",
+          quality: v.quality || "low",
+          fidelity: v.fidelity,
+          meter: { purpose: "experiment" },
+        });
+        experiments[runId].variants[i] = { ...v, ms: Date.now() - t0, image: out.buffer, usd: null };
+      } catch (err) {
+        experiments[runId].variants[i] = { ...v, error: err.message };
+      }
+    })
+  );
+});
+app.get("/api/admin/experiment/:run", requireUser, requireAdmin, async (req, res) => {
+  const e = experiments[Number(req.params.run)];
+  if (!e) return res.status(404).end();
+  const { rows } = await store.q(
+    "SELECT usage, usd::float AS usd FROM api_calls WHERE purpose = 'experiment' AND created_at >= to_timestamp($1 / 1000.0) ORDER BY id",
+    [e.started]
+  );
+  res.json({ variants: e.variants.map((v, i) => v && { ...v, image: v.image ? `/api/admin/experiment/${req.params.run}/${i}` : null }), calls: rows });
+});
+app.get("/api/admin/experiment/:run/:i", requireUser, requireAdmin, (req, res) => {
+  const v = experiments[Number(req.params.run)]?.variants[Number(req.params.i)];
+  if (!v?.image) return res.status(404).end();
+  res.set("Content-Type", "image/jpeg").send(v.image);
+});
+
 // Admin: the most recent OpenAI calls with their token usage and cost.
 app.get("/api/admin/calls", requireUser, requireAdmin, async (req, res) => {
   const { rows } = await store.q(
