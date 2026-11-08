@@ -20,9 +20,9 @@ import { logger } from "../lib/log.js";
 
 export const PRICE_CENTS = 99;
 const MAX_GENERATIONS = 3;
-const TARGET_MS = Number(process.env.BOOK_TARGET_MS || 56000); // finish (PDF ready) inside 60 s
-const EST_RETRY_MS = Number(process.env.EST_RETRY_MS || 19000); // one more generation + check
-const HEDGE_MS = Number(process.env.HEDGE_MS || 24000); // a slow image call gets a backup twin
+const TARGET_MS = Number(process.env.BOOK_TARGET_MS || 52000); // finish (PDF ready) well inside 60 s
+const EST_RETRY_MS = Number(process.env.EST_RETRY_MS || 15000); // one more low-fidelity generation + check
+const HEDGE_MS = Number(process.env.HEDGE_MS || 18000); // a slow image call gets a backup twin
 const PAGE_QUALITY = () => process.env.PAGE_QUALITY || process.env.OPENAI_IMAGE_QUALITY || "low";
 const SCENE_QUALITY = () => process.env.SCENE_QUALITY || "medium";
 const MOCK = () => process.env.MOCK_IMAGES === "1";
