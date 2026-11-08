@@ -54,7 +54,7 @@ const BOX_RULES =
   "Coordinates are fractions of the image: x and y are the top-left corner (0 = left/top, 1 = right/bottom), w and h the size. Be accurate.";
 
 // kind: "page" (hero edited into a scene) | "scene" (stand-in hero) | "portrait" (hero from photo)
-export async function checkImage({ kind, image, story, page, portrait, photo, model }) {
+export async function checkImage({ kind, image, story, page, portrait, photo, model, meter }) {
   const images = [{ buffer: image, mime: "image/jpeg", detail: "high", label: "IMAGE TO CHECK:" }];
   let task;
   if (kind === "portrait") {
@@ -80,6 +80,7 @@ export async function checkImage({ kind, image, story, page, portrait, photo, mo
     instructions: `${task}\n${BOX_RULES}\nBe concise in problems (each under 15 words).`,
     images,
     schema: SCHEMA,
+    meter,
     // Scenes are checked once, so they get the stronger model; per-book pages use the fast one.
     model: model || (kind === "scene" ? process.env.OPENAI_VISION_MODEL_SCENES || "gpt-4.1" : undefined),
   });
@@ -133,12 +134,13 @@ const SHEET = {
   },
 };
 
-export async function checkCharacter({ image, description }) {
+export async function checkCharacter({ image, description, meter }) {
   const c = await lookAt({
     name: "sheet_check",
     instructions: `Check this character reference sheet for a children's picture book. It should show exactly one character, full figure, on a plain background, matching: ${description}. Problems: under 15 words each.`,
     images: [{ buffer: image, mime: "image/jpeg", detail: "low" }],
     schema: SHEET,
+    meter,
     model: process.env.OPENAI_VISION_MODEL_SCENES || "gpt-4.1",
   });
   const fails = [];
@@ -160,7 +162,7 @@ const PANEL = {
   },
 };
 
-export async function checkPanel({ shaded, keep }) {
+export async function checkPanel({ shaded, keep, meter }) {
   return lookAt({
     name: "panel_check",
     instructions:
@@ -170,6 +172,7 @@ export async function checkPanel({ shaded, keep }) {
       "Covering only plain sky, clouds, treetops, grass, floor, walls or empty background is fine. Be strict: if in doubt, it covers something.",
     images: [{ buffer: shaded, mime: "image/jpeg", detail: "high" }],
     schema: PANEL,
+    meter,
     model: process.env.OPENAI_VISION_MODEL_SCENES || "gpt-4.1",
   });
 }

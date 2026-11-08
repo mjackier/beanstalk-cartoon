@@ -5,7 +5,7 @@ import { createApp, jsonBody, readBody, HttpError } from "./lib/http.js";
 import { logger, requestLogger } from "./lib/log.js";
 import { createStore, InsufficientFunds } from "./lib/store.js";
 import { registerAuth, requireUser, loginConfigured } from "./lib/auth.js";
-import { hasKey } from "./lib/openai.js";
+import { hasKey, setUsageRecorder } from "./lib/openai.js";
 import { sniffMime } from "./lib/images.js";
 import * as stripe from "./lib/stripe.js";
 import { STORIES, STORY_IDS } from "./book/stories.js";
@@ -18,6 +18,7 @@ process.on("unhandledRejection", (err) => logger.error("unhandled rejection", { 
 const app = createApp({ trustProxy: true });
 const store = await createStore();
 const pipeline = createPipeline(store);
+setUsageRecorder((c) => store.recordCall(c)); // every OpenAI call's cost goes into api_calls
 await pipeline.seedBible();
 
 app.use(requestLogger);
@@ -104,7 +105,14 @@ async function bookJson(book, userId) {
           layout: TEMPLATE[i].layout,
           url: img(row, false),
           thumb: img(row),
-          checked: row ? { pass: row.meta?.pass ?? true, generations: row.meta?.attempts?.length || 0, fromScene: Boolean(row.meta?.fromScene) } : null,
+          checked: row
+            ? {
+                pass: row.meta?.pass ?? true,
+                generations: (row.meta?.attempts || []).filter((a) => !a.error).length,
+                fromScene: Boolean(row.meta?.fromScene),
+                attempts: (row.meta?.attempts || []).map((a) => ({ pass: a.pass, fails: a.fails || [] })),
+              }
+            : null,
         };
       })
     : [];
@@ -127,6 +135,9 @@ async function bookJson(book, userId) {
     pages,
     documents: docs.map((d) => ({ id: d.id, url: `/api/documents/${d.id}`, pages: d.pages, bytes: d.bytes, created_at: d.created_at })),
     heroJob: pipeline.heroJob(book.id),
+    heroAttempts: hero?.meta?.attempts?.length || 0,
+    cost: story ? await store.bookCost(book.id) : null,
+    priceCents: PRICE_CENTS,
     job: pipeline.bookJob(book.id),
   };
 }
@@ -291,7 +302,9 @@ app.get("/api/account", requireUser, async (req, res) => {
     store.listRefunds(req.user.id),
   ]);
   const open = (t) => refunds.filter((r) => r.topup_id === t.id && ["requested", "processing"].includes(r.status)).reduce((s, r) => s + r.amount_cents, 0);
+  const costs = await store.costSummary();
   res.json({
+    costs,
     balance: user.balance_cents,
     priceCents: PRICE_CENTS,
     stripe: stripe.stripeMode(),

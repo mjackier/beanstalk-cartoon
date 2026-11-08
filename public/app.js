@@ -403,6 +403,19 @@ async function newBook(resumeId) {
   ready();
 }
 
+// The attempt count on every image (max 3 generations per image).
+function attemptLabel({ status, attempt, generations, pass, hero }) {
+  if (status === "done" || status === undefined) {
+    if (!hero) return "pre-drawn scene ✓";
+    if (!generations) return "✓";
+    return pass === false ? `best of ${generations} (none perfect)` : `✓ try ${generations} of 3`;
+  }
+  if (status === "drawing") return `try ${attempt} of 3 · drawing`;
+  if (status === "checking") return `try ${attempt} of 3 · checking`;
+  if (status === "redrawing") return `try ${attempt} of 3 · redrawing`;
+  return "";
+}
+
 // ------------------------------------------------------------------ one book: progress, then the result
 const STAGE_KEYS = ["hero", "pages", "check", "layout", "pdf"];
 async function bookPage(id) {
@@ -477,20 +490,7 @@ function renderProgress(job, shown) {
   for (const p of job.pages) {
     const tile = $(`.tile[data-n="${p.n}"]`);
     tile.className = `tile ${p.status}`;
-    const label =
-      p.status === "done"
-        ? p.hero
-          ? p.generations > 1
-            ? `✓ checked · drawn ${p.generations}×`
-            : "✓ checked"
-          : "✓"
-        : p.status === "redrawing"
-        ? `redrawing ${p.attempt} of 3`
-        : p.status === "checking"
-        ? "checking"
-        : p.status === "drawing"
-        ? "drawing"
-        : "";
+    const label = attemptLabel(p);
     if (p.url && !shown.has(p.n)) {
       shown.add(p.n);
       tile.innerHTML = `<img src="${p.url}" alt="Page ${p.n}" /><span class="n">${p.n}</span><span class="s"></span>`;
@@ -521,7 +521,23 @@ function finishedView(book) {
     </div>
     ${doc ? `<iframe class="viewer" src="${doc.url}?inline=1#view=Fit" title="The finished book"></iframe>` : ""}
     <h2 style="margin-top:28px">The pictures</h2>
-    <div class="grid">${book.pages.map((p) => `<a class="tile" href="${p.url}" target="_blank" rel="noopener"><img src="${p.thumb}" alt="Page ${p.n}" loading="lazy" /><span class="n">${p.n}</span></a>`).join("")}</div>
+    <p class="muted small">Every picture is checked by a vision model and redrawn if it fails, at most 3 times; if none is perfect, the best is kept. The label on each picture shows its tries.</p>
+    <div class="grid">${book.pages
+      .map((p) => {
+        const c = p.checked || {};
+        const label = attemptLabel({ status: "done", generations: c.generations, pass: c.pass, hero: !c.fromScene });
+        const why = (c.attempts || []).map((a, i) => `Try ${i + 1}: ${a.pass ? "passed" : "failed: " + a.fails.join("; ")}`).join("\n");
+        return `<a class="tile" href="${p.url}" target="_blank" rel="noopener" title="${esc(why || label)}"><img src="${p.thumb}" alt="Page ${p.n}" loading="lazy" /><span class="n">${p.n}</span><span class="s">${esc(label)}</span></a>`;
+      })
+      .join("")}</div>
+    ${
+      book.cost?.usd
+        ? `<section class="sheet" style="margin-top:22px"><h3>What this book cost to make</h3>
+            <p><strong>$${book.cost.usd.toFixed(2)}</strong> in API calls, against the ${money(book.priceCents)} price:
+            ${book.cost.imageCalls} image calls ($${book.cost.imageUsd.toFixed(2)}, of which ${book.cost.retryImageCalls} redraw${book.cost.retryImageCalls === 1 ? "" : "s"})
+            and ${book.cost.checkCalls} vision checks ($${book.cost.checkUsd.toFixed(2)}). Hero portrait: ${book.heroAttempts || 1} tr${(book.heroAttempts || 1) === 1 ? "y" : "ies"}.</p></section>`
+        : ""
+    }
     <p class="muted small" style="margin-top:16px">Made ${when(book.updated_at)}. This book stays in your account: sign in any time to download it again.</p>`;
 }
 
@@ -566,6 +582,16 @@ async function account(query = "") {
           <div class="amounts">${a.topupChoices.map((c) => `<button class="${c === 500 ? "primary" : ""}" data-topup="${c}">${money(c)}</button>`).join("")}</div>
           <p class="testcard">Stripe test mode: pay with card <code>4242 4242 4242 4242</code>, any future date, any CVC. No real money moves.</p>
           <p class="error" id="topupError"></p>
+        </section>
+        <section class="sheet">
+          <h3>What a book costs to make</h3>
+          ${
+            a.costs.books
+              ? `<p class="balance" style="font-size:34px">$${a.costs.avg.toFixed(2)}</p>
+                 <p class="small">Average API cost per book over ${a.costs.books} book${a.costs.books === 1 ? "" : "s"} (image calls, redraws and vision checks), against the <strong>${money(a.priceCents)}</strong> price: about $${(a.priceCents / 100 - a.costs.avg).toFixed(2)} margin per book.</p>
+                 <p class="muted small">Cheapest $${a.costs.min.toFixed(2)}, most expensive $${a.costs.max.toFixed(2)}. Not included: the one-off $${a.costs.setupUsd.toFixed(2)} spent drawing the character bible and the 40 shared scenes.</p>`
+              : `<p class="muted">No books made since cost tracking started.</p>`
+          }
         </section>
         <section class="sheet">
           <h3 id="refunds">Request a refund</h3>
