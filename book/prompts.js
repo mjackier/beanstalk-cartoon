@@ -68,6 +68,7 @@ export function heroSwapPrompt(story, page, heroDescription, { retryNotes = [] }
     `Image 1 is a finished illustration from a children's picture book of "${story.title}". Image 2 is the real child who is the hero of this book.`,
     `In image 1, the hero is ${story.heroName}: ${heroDescription}`,
     `Redraw ONLY the hero's head, face and hair so that the hero is clearly the child from image 2: same face shape, skin tone, hair colour, hairstyle and texture, eye shape and colour, eyebrows, nose, glasses and freckles (if any).`,
+    "The HAIR must be the child's own hair from image 2 (same colour, same length, same style), even where it shows under a hood or hat: do not keep the original hero's hair.",
     `Keep the hero's pose, expression, costume, body size and position exactly as they are in image 1 (${page.hero}).`,
     "Draw the new face in exactly the same 3D animated style and lighting as image 1, so it does not look pasted on, with the same head-to-body proportions as before.",
     "Change nothing else: the same background, the same other characters, the same objects, composition and colours as image 1.",

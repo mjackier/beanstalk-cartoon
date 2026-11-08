@@ -37,7 +37,7 @@ const SCHEMA = {
     hero_present: { type: "boolean" },
     hero_face_visible: { type: "boolean" },
     hero_count: { type: "integer" },
-    likeness: { type: "integer", description: "0-10: how clearly the hero is the same child as the reference portrait" },
+    likeness: { type: "integer", description: "0-10: how clearly the hero is the same child as the reference portrait, including hair colour, length and style (count different hair heavily)" },
     pasted_on: { type: "boolean", description: "the hero's head looks pasted on: different style, lighting or proportions from the rest" },
     anatomy_ok: { type: "boolean" },
     text_in_image: { type: "boolean" },

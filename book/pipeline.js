@@ -383,7 +383,9 @@ export function createPipeline(store) {
                         prompt,
                         size: "1536x1024",
                         quality: PAGE_QUALITY(),
-                        fidelity: "high",
+                        // Low input fidelity: 517 instead of 10,885 image-input tokens, about $0.024 instead of
+                        // $0.107 a page, with the same scene and likeness in side-by-side tests (review-log run 1, fix 1).
+                        fidelity: process.env.PAGE_FIDELITY || "low",
                         meter: { purpose: "page", bookId: book.id, userId: user.id, page: n, attempt: a },
                       }),
                     `page ${n}`
