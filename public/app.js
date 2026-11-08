@@ -561,13 +561,15 @@ async function account(query = "") {
           <p class="muted" style="margin:0">Balance</p>
           <p class="balance">${money(a.balance)}</p>
           <p class="muted small">Each book costs ${money(a.priceCents)}. That's ${Math.floor(a.balance / a.priceCents)} book${Math.floor(a.balance / a.priceCents) === 1 ? "" : "s"}.</p>
+          ${a.payments.some((p) => p.refundable > 0) ? `<a class="button" href="#refunds" id="toRefunds">Request a refund</a>` : ""}
           <h3 style="margin-top:18px">Add funds</h3>
           <div class="amounts">${a.topupChoices.map((c) => `<button class="${c === 500 ? "primary" : ""}" data-topup="${c}">${money(c)}</button>`).join("")}</div>
           <p class="testcard">Stripe test mode: pay with card <code>4242 4242 4242 4242</code>, any future date, any CVC. No real money moves.</p>
           <p class="error" id="topupError"></p>
         </section>
         <section class="sheet">
-          <h3>Refunds</h3>
+          <h3 id="refunds">Request a refund</h3>
+          <p class="muted small">Get unspent money back on the card you paid with.</p>
           ${
             a.payments.length
               ? a.payments
@@ -627,6 +629,11 @@ async function account(query = "") {
       </section>
     </div>`;
   $("#resumeBtn")?.addEventListener("click", () => store("resume-book"));
+  $("#toRefunds")?.addEventListener("click", (e) => {
+    e.preventDefault(); // the router owns the hash, so scroll instead of navigating
+    $("#refunds").scrollIntoView({ behavior: "smooth", block: "start" });
+    view.querySelector("[data-amt]")?.focus({ preventScroll: true });
+  });
   view.querySelectorAll("[data-topup]").forEach((b) =>
     b.addEventListener("click", async () => {
       b.disabled = true;
