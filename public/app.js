@@ -580,8 +580,9 @@ async function account(query = "") {
               <span class="spacer"></span>
               ${
                 p.refundable > 0
-                  ? `<input type="number" min="0.01" step="0.01" max="${(p.refundable / 100).toFixed(2)}" value="${(p.refundable / 100).toFixed(2)}" aria-label="Amount to refund" data-amt="${p.id}" />
-                     <button data-refund="${p.id}">Request refund</button>`
+                  ? `<input type="number" min="0.01" step="0.01" max="${(p.refundable / 100).toFixed(2)}" placeholder="0.00" aria-label="Amount to refund, up to ${money(p.refundable)}" data-amt="${p.id}" data-max="${p.refundable}" data-card="${esc(p.card)}" />
+                     <button data-refund="${p.id}">Request refund</button>
+                     <span class="muted small" style="flex-basis:100%">You can get back up to ${money(p.refundable)}.</span>`
                   : `<span class="muted small">Nothing left to refund</span>`
               }
             </div>`
@@ -648,7 +649,23 @@ async function account(query = "") {
   );
   view.querySelectorAll("[data-refund]").forEach((b) =>
     b.addEventListener("click", async () => {
-      const amt = Math.round(Number(view.querySelector(`[data-amt="${b.dataset.refund}"]`).value) * 100);
+      const input = view.querySelector(`[data-amt="${b.dataset.refund}"]`);
+      const amt = Math.round(Number(input.value) * 100);
+      const max = Number(input.dataset.max);
+      if (!amt || amt <= 0 || amt > max) {
+        $("#refundError").textContent = `Enter an amount between $0.01 and ${money(max)}.`;
+        input.focus();
+        return;
+      }
+      $("#refundError").textContent = "";
+      // Two steps: say exactly what will happen, then do it.
+      if (b.dataset.confirm !== String(amt)) {
+        b.dataset.confirm = String(amt);
+        b.classList.add("primary");
+        b.textContent = `Send ${money(amt)} back to card ${input.dataset.card || ""}`.trim();
+        $("#refundError").innerHTML = `<span class="muted" style="font-weight:400">Your balance will go from ${money(state.me.balance)} to ${money(state.me.balance - amt)}. Click again to confirm.</span>`;
+        return;
+      }
       b.disabled = true;
       b.textContent = "Processing…";
       try {
