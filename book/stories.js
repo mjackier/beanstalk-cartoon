@@ -152,7 +152,7 @@ export const STORIES = {
       },
       {
         text: "THUMP! THUMP! In stomped the giant. “Fee-fi-fo-fum!” he roared. “I smell a little one!”",
-        scene: "The giant's enormous kitchen with a huge table and a giant copper pot in the foreground. In the background the giant stomps in through the door with his nose in the air, sniffing, eyes turned up and away: he has NOT seen Jack.",
+        scene: "The giant's enormous kitchen with a huge table and a giant copper pot in the foreground. In the background the giant has just stomped in and stands turned AWAY from the pot, in profile, facing the far side of the room, eyes closed and nose up, sniffing the air: he has NOT seen Jack.",
         hero: "In the front corner of the picture, Jack is hidden behind the giant copper pot, only his head peeking out round its side, eyes wide; his face is clearly visible to the viewer but hidden from the giant.",
         cast: ["giant"],
         keep: ["Jack's face", "the giant's face", "Jack hidden behind the pot"],
@@ -181,7 +181,7 @@ export const STORIES = {
       },
       {
         text: "Down the beanstalk Jack slid, with the hen tucked under {his} arm and the giant's great boots coming after him.",
-        scene: "The beanstalk in the sky; high above, the giant's two legs (exactly one pair of huge boots) climb down the beanstalk out of the clouds.",
+        scene: "The beanstalk in the sky. At the top of the picture the giant's two huge legs, attached to him, come down out of the clouds as he climbs down the beanstalk: we see his trousers from the knees down and exactly two boots gripping the stalk.",
         hero: "Jack slides down the beanstalk holding on with one hand and the hen with the other, looking up; face visible.",
         cast: ["giant", "hen"],
         keep: ["Jack's face", "the hen", "the giant's two boots"],
