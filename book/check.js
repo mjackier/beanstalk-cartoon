@@ -28,6 +28,7 @@ const SCHEMA = {
     "anatomy_ok",
     "text_in_image",
     "missing",
+    "forbidden",
     "problems",
     "score",
     "boxes",
@@ -41,6 +42,7 @@ const SCHEMA = {
     anatomy_ok: { type: "boolean" },
     text_in_image: { type: "boolean" },
     missing: { type: "array", items: { type: "string" } },
+    forbidden: { type: "array", items: { type: "string" }, description: "items from the must-not-show list that ARE visible" },
     problems: { type: "array", items: { type: "string" } },
     score: { type: "integer", description: "0-10 overall quality as a professional picture-book page" },
     boxes: { type: "array", items: BOX },
@@ -68,6 +70,7 @@ export async function checkImage({ kind, image, story, page, portrait, photo, mo
       `The hero is ${story.heroName}${kind === "scene" ? " (a stand-in child model)" : ", who must be the same child as the reference portrait"}. ` +
       `The page should show: ${page.scene} ${page.hero ? `Hero: ${page.hero}` : "The hero is not on this page."} ` +
       `Must-see details: ${page.keep.join("; ")}. ` +
+      (page.avoid?.length ? `Must NOT be visible (list any you see in \`forbidden\`): ${page.avoid.join("; ")}. ` : "") +
       "Report anything a picture-book editor would reject: missing must-see details (put them in `missing`), wrong number of objects the text states " +
       "(e.g. five beans), the hero appearing twice, distorted faces or hands, extra limbs, a head that looks pasted on, any letters or text drawn in the picture.";
   }
@@ -105,6 +108,7 @@ export function verdict(kind, c, { needsHero = true } = {}) {
     }
   }
   if (c.missing?.length) fails.push(`show clearly: ${c.missing.join(", ")}`);
+  if (c.forbidden?.length) fails.push(`remove: ${c.forbidden.join(", ")}`);
   if (c.score < 6) fails.push(...(c.problems || []).slice(0, 3));
   const rank = (c.score || 0) + (needsHero && kind !== "scene" ? (c.likeness || 0) * 0.6 : 0) - fails.length * 2;
   return { pass: fails.length === 0, fails, rank };
@@ -138,4 +142,28 @@ export async function checkCharacter({ image, description }) {
   if (c.text_in_image) fails.push("no text or letters");
   if (c.matches < 7) fails.push(...(c.problems || []).slice(0, 3));
   return { check: c, pass: fails.length === 0, fails, rank: (c.matches || 0) + (c.is_character ? 10 : 0) - fails.length };
+}
+
+// Text placement check: does the red box (where the caption would go) cover anything important?
+const PANEL = {
+  type: "object",
+  additionalProperties: false,
+  required: ["covers_something", "covered"],
+  properties: {
+    covers_something: { type: "boolean" },
+    covered: { type: "array", items: { type: "string" }, description: "what the red box covers, even partly" },
+  },
+};
+
+export async function checkPanel({ shaded, keep }) {
+  return lookAt({
+    name: "panel_check",
+    instructions:
+      "The translucent RED rectangle shows where a block of story text will be printed on this picture-book illustration. " +
+      "Does the red rectangle cover ANY part (even a small part) of: any face or head (including hair, hats, ears and horns), any hand or paw, " +
+      `or these story details: ${keep.join("; ")}? Covering plain sky, clouds, grass, floor, walls or empty background is fine. Be strict.`,
+    images: [{ buffer: shaded, mime: "image/jpeg", detail: "high" }],
+    schema: PANEL,
+    model: process.env.OPENAI_VISION_MODEL_SCENES || "gpt-4.1",
+  });
 }

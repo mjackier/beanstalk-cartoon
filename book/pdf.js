@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import { LAYOUTS, PAGE_W, PAGE_H, TEMPLATE } from "./template.js";
-import { firstClear, fullPageCandidates } from "./layout.js";
+import { firstClear, fullPageCandidates, padBox, intersects } from "./layout.js";
 import { personalize } from "./stories.js";
 
 const require = createRequire(import.meta.url);
@@ -103,8 +103,31 @@ function pageNumber(doc, n, onArt) {
   }
 }
 
+// Height of the caption panel for some text at a width, as a fraction of the page height.
+export function panelMeasure(doc, text) {
+  const art = LAYOUTS.full.art;
+  return (wFrac) => {
+    const f = fit(doc, text, wFrac * art.w - 32, 999, { max: 23, min: 23 });
+    return (f.h + 32 - 6) / art.h;
+  };
+}
+
 // Decide the layout of one page. Returns what was decided so it can be logged and shown.
-export function planPage(doc, slot, text, boxes) {
+// scenePanel: the caption spot verified once for this scene (undefined = never checked, null = none is clear).
+export function planPage(doc, slot, text, boxes, scenePanel) {
+  if (slot.layout === "full" && scenePanel !== undefined) {
+    if (!scenePanel) return { layout: "band", fallback: true, reason: "no caption spot on this scene was verified clear" };
+    const need = panelMeasure(doc, text)(scenePanel.wFrac);
+    const rect = { ...scenePanel.rect };
+    if (need > rect.h) {
+      // a longer personalised text: grow away from the page edge
+      if (scenePanel.zone === "bottom") rect.y -= need - rect.h;
+      rect.h = need;
+    }
+    const hit = boxes.map(padBox).find((b) => intersects(rect, b));
+    if (hit) return { layout: "band", fallback: true, reason: `the verified spot would touch ${hit.label} on this book's picture` };
+    return { layout: "full", panel: { ...scenePanel, rect }, verified: true };
+  }
   if (slot.layout === "full") {
     const art = LAYOUTS.full.art;
     const pad = 16;
@@ -120,8 +143,8 @@ export function planPage(doc, slot, text, boxes) {
   return { layout: slot.layout };
 }
 
-function drawStoryPage(doc, { slot, text, jpeg, boxes, alias }) {
-  const plan = planPage(doc, slot, text, boxes);
+function drawStoryPage(doc, { slot, text, jpeg, boxes, alias, scenePanel }) {
+  const plan = planPage(doc, slot, text, boxes, scenePanel);
   if (plan.layout === "full") {
     const art = LAYOUTS.full.art;
     drawArt(doc, jpeg, art, alias);
@@ -136,7 +159,7 @@ function drawStoryPage(doc, { slot, text, jpeg, boxes, alias }) {
     doc.roundedRect(px, py, pw, ph, 12, 12, "F");
     doc.restoreGraphicsState();
     const f = fit(doc, text, pw - 32, 999, { max: 23, min: 23 });
-    writeLines(doc, f, px + 16, py + 13, pw - 32, "center");
+    writeLines(doc, f, px + 16, py + Math.max(13, (ph - f.h) / 2 - 3), pw - 32, "center");
     pageNumber(doc, slot.n, true);
     return plan;
   }
@@ -226,7 +249,12 @@ function drawAboutMe(doc, { name, age, favorites, about, heroName, portrait }) {
 }
 
 // pages: [{ jpeg: Buffer, boxes }], 20 of them in template order.
-export function buildBookPdf({ story, book, pages, portrait }) {
+// "mattan" -> "Mattan" (a name typed all in lower case looks like a typo on a cover)
+export const displayName = (name) =>
+  name && name === name.toLowerCase() ? name.replace(/(^|[\s-])(\p{L})/gu, (_, a, b) => a + b.toUpperCase()) : name;
+
+export function buildBookPdf({ story, book: rawBook, pages, portrait }) {
+  const book = { ...rawBook, child_name: displayName(rawBook.child_name) };
   const doc = newDoc();
   doc.setProperties({ title: `${story.title}, starring ${book.child_name}`, subject: "A personalised storybook", creator: "Beanstalk Storybook" });
   drawCover(doc, { title: story.title, heroName: story.heroName, childName: book.child_name, jpeg: pages[0].jpeg });
@@ -235,7 +263,7 @@ export function buildBookPdf({ story, book, pages, portrait }) {
     doc.addPage([PAGE_W, PAGE_H], "landscape");
     const slot = TEMPLATE[i];
     const text = personalize(story.pages[i].text, book.pronouns);
-    plans.push({ n: slot.n, ...drawStoryPage(doc, { slot, text, jpeg: p.jpeg, boxes: p.boxes || [], alias: `p${i + 1}` }) });
+    plans.push({ n: slot.n, ...drawStoryPage(doc, { slot, text, jpeg: p.jpeg, boxes: p.boxes || [], alias: `p${i + 1}`, scenePanel: p.scenePanel }) });
   });
   doc.addPage([PAGE_W, PAGE_H], "landscape");
   drawAboutMe(doc, {

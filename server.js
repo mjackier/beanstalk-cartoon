@@ -423,6 +423,37 @@ app.get("/api/admin/scenes/:story/:n", requireUser, requireAdmin, async (req, re
   res.set("Content-Type", "image/jpeg").set("Cache-Control", "private, max-age=86400").send(s.data);
 });
 
+// Admin test book: same pipeline, made from the survey photo, not charged (it costs only OpenAI money).
+app.post("/api/admin/test-book", requireUser, requireAdmin, async (req, res) => {
+  const body = await jsonBody(req);
+  const story = STORIES[body.story] ? body.story : "jack";
+  const fs = await import("node:fs/promises");
+  const photo = await fs.readFile("public/survey/photo.jpg");
+  const book = await store.createBook(req.user.id, {
+    story,
+    child_name: body.name || "Mattan",
+    child_age: "8",
+    child_favorites: "soccer, pancakes",
+    child_about: "Admin test book.",
+    pronouns: "he",
+  });
+  const hero = pipeline.startHero(book, { buffer: photo, mime: "image/jpeg" }, req.user.id);
+  await hero.promise;
+  pipeline.startBook({ book, user: req.user, charge: null });
+  res.json({ id: book.id });
+});
+
+// Admin: what the checker and the layout decided for every page of any book.
+app.get("/api/admin/books/:id", requireUser, requireAdmin, async (req, res) => {
+  const imgs = await store.listImages(Number(req.params.id));
+  const { rows } = await store.q("SELECT id, user_id, story, child_name, status, stats FROM books WHERE id = $1", [Number(req.params.id)]);
+  res.json({ book: rows[0], job: pipeline.bookJob(Number(req.params.id)), images: imgs.map((i) => ({ kind: i.kind, page: i.page_id, meta: i.meta })) });
+});
+app.get("/api/admin/books", requireUser, requireAdmin, async (_req, res) => {
+  const { rows } = await store.q("SELECT id, user_id, story, child_name, status, stats, updated_at FROM books ORDER BY id DESC LIMIT 30");
+  res.json(rows);
+});
+
 // The template as JSON (the admin page draws it; handy for review too).
 app.get("/api/template", (_req, res) => res.json({ layouts: LAYOUTS, slots: TEMPLATE }));
 

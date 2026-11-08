@@ -36,6 +36,7 @@ export function scenePrompt(story, page, slot, refs, { retryNotes = [] } = {}) {
     `CHARACTERS: draw each character exactly like its reference image: same face, body, colours and clothes.\n${cast}`,
     `SCENE: ${page.scene}`,
     page.hero ? `HERO: ${page.hero} The hero's face must be clearly visible and large enough to recognise.` : "The hero is NOT in this picture.",
+    page.avoid?.length ? `MUST NOT SHOW: ${page.avoid.join("; ")}.` : "",
     `CAMERA: ${slot.shot}.`,
     `COMPOSITION: ${composition}`,
     retryNotes.length ? `FIX THESE PROBLEMS FROM THE LAST ATTEMPT: ${retryNotes.join("; ")}.` : "",

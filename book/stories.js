@@ -6,6 +6,7 @@
 //   hero   what the hero is doing, or null if the hero is not on this page.
 //   cast   bible characters in the picture (besides the hero).
 //   keep   things the page needs you to see: the checker must find them, and text may never cover them.
+//   avoid  things that would contradict the story (the checker fails the picture if it sees them).
 //
 // Each story's character bible is stored in the database (table `characters`) the first time the
 // server starts; the reference images are generated once by the admin and reused for every book.
@@ -79,9 +80,10 @@ export const STORIES = {
       {
         text: "So Jack tied a rope to Milky-White and set off down the long, winding road to market.",
         scene: "A dirt road winding between green hedges and fields towards a distant town on a hill. Sunny morning.",
-        hero: "Jack walks along the road leading Milky-White on a rope, smiling, in three-quarter view towards the viewer.",
+        hero: "Jack walks along the road a step AHEAD of Milky-White, holding the rope in his hand in front of his body, the rope running back to the cow's collar; smiling, in three-quarter view towards the viewer.",
         cast: ["cow"],
-        keep: ["Jack's face", "Milky-White", "the rope"],
+        keep: ["Jack's face", "Milky-White", "the rope from Jack's hand to the cow's collar"],
+        avoid: ["the rope held behind Jack's back"],
       },
       {
         text: "On the way, {he} met a strange little old man with a twinkle in his eye. “Good morning, Jack,” he said.",
@@ -106,10 +108,11 @@ export const STORIES = {
       },
       {
         text: "“Beans?” cried {his} mother. “You sold our cow for beans?” And she threw them out of the window.",
-        scene: "The cottage kitchen at dusk, warm lamplight. Jack's mother, angry, flings the five colourful beans out of the open window; they arc through the air into the dark garden.",
+        scene: "The cottage kitchen at dusk, warm lamplight. Jack's mother leans out of the wide-open window with her arm stretched OUTSIDE, flinging the five colourful beans away; the beans are already outside the house, flying through the evening air over the dark garden.",
         hero: "Jack stands in the middle of the kitchen with his hands raised, shocked; face clearly visible.",
         cast: ["mother"],
-        keep: ["Jack's face", "the mother's face", "the beans flying out of the window"],
+        keep: ["Jack's face", "the mother's face", "the beans flying outside, beyond the window"],
+        avoid: ["beans flying inside the room"],
       },
       {
         text: "That night Jack went to bed without any supper, feeling very sorry for {him}self.",
@@ -120,10 +123,11 @@ export const STORIES = {
       },
       {
         text: "But in the morning {his} little room was full of green light. Outside, a giant beanstalk had grown up into the sky!",
-        scene: "The attic bedroom in morning light. Through the open round window, a huge twisting green beanstalk with enormous leaves rises past the window into the clouds.",
+        scene: "The attic bedroom in morning light. Through the open round window we look DOWN into the cottage garden on the ground: green grass, the garden fence and the fields. From the garden soil, a huge twisting green beanstalk with enormous leaves grows up past the window and on into the clouds.",
         hero: "Jack leans out of the window in his nightshirt, mouth open in amazement, looking up at the beanstalk; face in three-quarter view.",
         cast: [],
-        keep: ["Jack's face", "the beanstalk"],
+        keep: ["Jack's face", "the beanstalk", "the garden on the ground below the window"],
+        avoid: ["only sky and clouds outside the window, as if the house were in the sky"],
       },
       {
         text: "Jack climbed out of the window and up, up, up the beanstalk, until the cottage was a speck far below.",
@@ -148,10 +152,11 @@ export const STORIES = {
       },
       {
         text: "THUMP! THUMP! In stomped the giant. “Fee-fi-fo-fum!” he roared. “I smell a little one!”",
-        scene: "The giant's enormous kitchen with a huge table and a giant copper pot. The giant stomps in through the door, sniffing the air.",
-        hero: "In the front corner of the picture, Jack peeks out from behind the giant copper pot, eyes wide; face clearly visible.",
+        scene: "The giant's enormous kitchen with a huge table and a giant copper pot in the foreground. In the background the giant stomps in through the door with his nose in the air, sniffing, eyes turned up and away: he has NOT seen Jack.",
+        hero: "In the front corner of the picture, Jack is hidden behind the giant copper pot, only his head peeking out round its side, eyes wide; his face is clearly visible to the viewer but hidden from the giant.",
         cast: ["giant"],
-        keep: ["Jack's face", "the giant's face"],
+        keep: ["Jack's face", "the giant's face", "Jack hidden behind the pot"],
+        avoid: ["the giant looking at Jack", "Jack in plain view of the giant"],
       },
       {
         text: "After breakfast the giant set a little brown hen on the table. “Lay!” he said, and she laid an egg of solid gold.",
@@ -176,10 +181,11 @@ export const STORIES = {
       },
       {
         text: "Down the beanstalk Jack slid, with the hen tucked under {his} arm and the giant's great boots coming after him.",
-        scene: "The beanstalk in the sky; high above, the giant's huge boots climb down through the clouds.",
+        scene: "The beanstalk in the sky; high above, the giant's two legs (exactly one pair of huge boots) climb down the beanstalk out of the clouds.",
         hero: "Jack slides down the beanstalk holding on with one hand and the hen with the other, looking up; face visible.",
         cast: ["giant", "hen"],
-        keep: ["Jack's face", "the hen", "the giant's boots"],
+        keep: ["Jack's face", "the hen", "the giant's two boots"],
+        avoid: ["more than two giant boots or legs", "boots floating with no legs"],
       },
       {
         text: "“Mother, the axe!” shouted Jack. Chop! Chop! Chop! {He} swung with all {his} might.",
@@ -190,17 +196,19 @@ export const STORIES = {
       },
       {
         text: "With a creak and a crash, the beanstalk tumbled down. The giant scrambled back into the clouds and was never seen again.",
-        scene: "The beanstalk topples sideways across the fields in a big leafy swoosh; high up, the giant's boots disappear back into the clouds.",
-        hero: "Jack and his mother stand together hugging and watching, safe at the cottage; Jack's face visible.",
-        cast: ["mother", "giant"],
-        keep: ["Jack's face", "the falling beanstalk"],
+        scene: "Beside the cottage, the chopped beanstalk falls sideways across the fields in a big leafy arc, its cut stump in the garden. Only an empty sky and clouds above: the giant has gone.",
+        hero: "Jack and his mother stand together hugging and watching the beanstalk fall, safe beside the cottage; Jack's face visible.",
+        cast: ["mother"],
+        keep: ["Jack's face", "the falling beanstalk", "the cut stump"],
+        avoid: ["floating boots", "any part of the giant"],
       },
       {
         text: "From then on, the little hen laid a golden egg every morning, and Jack and {his} mother were never hungry again. The End.",
-        scene: "The cottage kitchen, now cosy and full: food on the table, a warm fire. The hen sits in a basket with golden eggs. Milky-White looks in through the window, home again.",
+        scene: "The cottage kitchen, now cosy and full: food on the table, a warm fire. The hen sits in a basket of golden eggs on the table.",
         hero: "Jack sits at the table beside his mother, laughing, holding up a golden egg; face clearly visible.",
-        cast: ["mother", "hen", "cow"],
+        cast: ["mother", "hen"],
         keep: ["Jack's face", "the mother's face", "the hen", "the golden eggs"],
+        avoid: ["a cow (Milky-White was sold)"],
       },
     ],
   },

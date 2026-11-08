@@ -689,6 +689,9 @@ async function admin() {
     <div class="row" style="margin:10px 0 18px">
       <button class="primary" data-run='{"what":"bible"}'>Draw missing bible images</button>
       <button data-run='{"what":"scenes"}'>Draw missing scenes</button>
+      <button data-run='{"what":"panels"}'>Re-verify caption spots</button>
+      <button id="testJack">Test book: Jack</button>
+      <button id="testRed">Test book: Red</button>
       <span class="muted">${s.running ? "Running…" : ""}</span>
     </div>
     ${s.stories
@@ -713,6 +716,7 @@ async function admin() {
                 ? ` · score ${sc.meta.check?.score ?? "?"} · ${sc.meta.attempts?.length || 1} tr${(sc.meta.attempts?.length || 1) > 1 ? "ies" : "y"} ${sc.meta.pass ? "✓" : `<span class="fail">✗ ${esc((sc.meta.fails || []).join("; "))}</span>`}`
                 : ""
             }
+            ${sc.layout === "full" ? `<br />caption: ${sc.meta?.panel ? `${sc.meta.panel.zone}-${sc.meta.panel.align} ✓ verified` : sc.meta?.panel === null ? "none clear → text below picture" : "not checked"}` : ""}
             <br /><span class="muted">${esc(sc.text)}</span>
             <br /><button class="ghost small" data-run='${JSON.stringify({ what: "scenes", story: st.id, only: [sc.n] })}'>Redraw</button></figcaption></figure>`
           )
@@ -736,6 +740,12 @@ async function admin() {
       setTimeout(admin, 800);
     })
   );
+  for (const [id, story] of [["#testJack", "jack"], ["#testRed", "red"]])
+    $(id).addEventListener("click", async () => {
+      toast("Drawing the hero, then the book…");
+      const { id: bookId } = await api("POST", "/api/admin/test-book", { json: { story } });
+      location.hash = `#/book/${bookId}`;
+    });
   if (s.running) state.timers.push(setTimeout(admin, 4000));
 }
 

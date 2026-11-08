@@ -10,10 +10,12 @@
 import { STORIES } from "./stories.js";
 import { TEMPLATE } from "./template.js";
 import { characterPrompt, scenePrompt, heroPortraitPrompt, heroSwapPrompt } from "./prompts.js";
-import { checkImage, verdict, checkCharacter } from "./check.js";
-import { buildBookPdf } from "./pdf.js";
+import { checkImage, verdict, checkCharacter, checkPanel } from "./check.js";
+import { buildBookPdf, newDoc, panelMeasure } from "./pdf.js";
+import { fullPageCandidates, firstClear } from "./layout.js";
+import { personalize } from "./stories.js";
 import { editImage, generateImage } from "../lib/openai.js";
-import { thumbnail } from "../lib/images.js";
+import { thumbnail, shadeRect } from "../lib/images.js";
 import { logger } from "../lib/log.js";
 
 export const PRICE_CENTS = 99;
@@ -176,6 +178,39 @@ export function createPipeline(store) {
     });
   }
 
+  // Text placement, decided once per full-bleed scene and verified by looking:
+  // candidates that miss the checker's boxes are drawn onto the picture as a red box, and the
+  // stronger vision model must confirm the box covers no face, head, hand or must-see detail.
+  async function findPanel(storyId, n) {
+    const story = STORIES[storyId];
+    const slot = TEMPLATE[n - 1];
+    if (slot.layout !== "full") return undefined;
+    const scene = await store.getScene(storyId, n);
+    const page = story.pages[n - 1];
+    const doc = newDoc();
+    // measure the longest personalised version so every child's text fits
+    const texts = ["he", "she", "they"].map((p) => personalize(page.text, p));
+    const measure = (w) => Math.max(...texts.map((t) => panelMeasure(doc, t)(w)));
+    let candidates = fullPageCandidates(slot.prefer, measure);
+    const tried = [];
+    for (let i = 0; i < 6 && candidates.length; i++) {
+      const c = firstClear(candidates, scene.meta?.boxes || []);
+      if (!c) break;
+      candidates = candidates.filter((x) => x.rect !== c.rect);
+      const verdictPanel = await checkPanel({ shaded: shadeRect(scene.data, c.rect), keep: page.keep });
+      tried.push({ zone: c.zone, align: c.align, wFrac: c.wFrac, clear: !verdictPanel.covers_something, covered: verdictPanel.covered });
+      adminLog("caption spot", { story: storyId, n, zone: c.zone, align: c.align, clear: !verdictPanel.covers_something, covered: verdictPanel.covered });
+      if (!verdictPanel.covers_something) {
+        const panel = { zone: c.zone, align: c.align, wFrac: c.wFrac, rect: c.rect };
+        await store.setSceneMeta(storyId, n, { ...scene.meta, panel, panelTried: tried });
+        return panel;
+      }
+    }
+    await store.setSceneMeta(storyId, n, { ...scene.meta, panel: null, panelTried: tried });
+    adminLog("caption spot: none clear, this page will put its text below the picture", { story: storyId, n });
+    return null;
+  }
+
   // Admin: draw whatever is missing (or the listed items again), a few at a time.
   async function pregen({ story: storyId, what, only, force = false }) {
     if (admin.running) throw Object.assign(new Error("Pre-generation is already running."), { status: 409 });
@@ -193,8 +228,18 @@ export function createPipeline(store) {
             const todo = TEMPLATE.map((s) => s.n).filter((n) => (only ? only.includes(n) : force || !have.has(n)));
             // 6 at a time keeps well inside the account's image rate limit
             for (let i = 0; i < todo.length; i += 6) {
-              await Promise.all(todo.slice(i, i + 6).map((n) => drawScene(sid, n).catch((e) => adminLog("scene failed", { story: sid, n, error: e.message }))));
+              await Promise.all(
+                todo.slice(i, i + 6).map((n) =>
+                  drawScene(sid, n)
+                    .then(() => findPanel(sid, n))
+                    .catch((e) => adminLog("scene failed", { story: sid, n, error: e.message }))
+                )
+              );
             }
+          }
+          if (what === "panels") {
+            const todo = TEMPLATE.filter((s) => s.layout === "full").map((s) => s.n).filter((n) => !only || only.includes(n));
+            for (const n of todo) await findPanel(sid, n).catch((e) => adminLog("caption spot failed", { story: sid, n, error: e.message }));
           }
         }
         adminLog("pre-generation finished");
@@ -310,7 +355,7 @@ export function createPipeline(store) {
               meta: { boxes: scene.meta?.boxes || [], fromScene: true, attempts: [] },
             });
             p.url = `/api/images/${saved.id}?v=${saved.v}`;
-            return { jpeg: scene.data, boxes: scene.meta?.boxes || [] };
+            return { jpeg: scene.data, boxes: scene.meta?.boxes || [], scenePanel: scene.meta?.panel };
           }
           const attempts = [];
           let notes = [];
@@ -365,7 +410,8 @@ export function createPipeline(store) {
           const good = attempts.filter((x) => x.buffer);
           if (!good.length) throw new Error(`Page ${n} could not be drawn: ${attempts.at(-1)?.error || "unknown error"}`);
           const best = good.find((x) => x.v.pass) || good.reduce((a, b) => (b.v.rank > a.v.rank ? b : a));
-          const boxes = best.check.boxes?.length ? best.check.boxes : scene.meta?.boxes || [];
+          // Text must miss both what this book's picture shows and what the scene showed.
+          const boxes = [...(best.check.boxes || []), ...(scene.meta?.boxes || [])];
           const saved = await store.saveImage(book.id, "page", pageId(n), best.buffer, "image/jpeg", best.prompt, {
             meta: {
               boxes,
@@ -387,7 +433,7 @@ export function createPipeline(store) {
           p.pass = best.v.pass;
           p.generations = attempts.length;
           p.url = `/api/images/${saved.id}?v=${saved.v}`;
-          return { jpeg: best.buffer, boxes };
+          return { jpeg: best.buffer, boxes, scenePanel: scene.meta?.panel };
         })
       );
       mark("pages");
