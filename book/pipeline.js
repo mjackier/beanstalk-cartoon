@@ -361,6 +361,7 @@ export function createPipeline(store) {
           }
           const attempts = [];
           let notes = [];
+          let refusals = 0;
           for (let a = 1; a <= MAX_GENERATIONS; a++) {
             p.attempt = a;
             p.status = a === 1 ? "drawing" : "redrawing";
@@ -384,6 +385,14 @@ export function createPipeline(store) {
                     `page ${n}`
                   );
             } catch (err) {
+              // A safety-filter refusal produced no picture, so it isn't one of the 3 generations:
+              // ask again (up to 3 extra times) without using up an attempt.
+              if (/safety system/i.test(err.message) && refusals < 3) {
+                refusals++;
+                a--;
+                logger.warn("page refused by the safety filter, asking again", { bookId: book.id, n, refusals });
+                continue;
+              }
               attempts.push({ error: err.message, v: { pass: false, rank: -99, fails: [err.message] } });
               logger.error("page generation failed", { bookId: book.id, n, attempt: a, error: err.message });
               if (a === MAX_GENERATIONS) break;

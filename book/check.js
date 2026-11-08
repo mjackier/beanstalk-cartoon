@@ -62,6 +62,7 @@ export async function checkImage({ kind, image, story, page, portrait, photo, mo
     task =
       "You check a cartoon portrait made from a photo for a children's picture book. The portrait should show exactly one child, " +
       "head and shoulders, recognisably the same person as the photo (face shape, skin tone, hair, eyes, glasses), in a polished 3D animated style. " +
+      "The hero is ALWAYS drawn as a child of about 8 on purpose, even from a photo of an adult: never count the younger age or a missing beard against likeness. " +
       "hero = the child in the portrait; likeness = how clearly it is the person in the photo. must-see: the face.";
   } else {
     if (portrait) images.push({ buffer: portrait, mime: "image/jpeg", detail: "low", label: "THE HERO'S REFERENCE PORTRAIT:" });
