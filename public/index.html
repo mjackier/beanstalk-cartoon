@@ -34,9 +34,9 @@
 
   <dialog id="pwDialog">
     <form method="dialog" id="pwForm">
-      <h2>Password for drawing</h2>
-      <p>Drawing pictures spends real money on the image service, so it needs the class password.</p>
-      <input id="pwInput" type="password" autocomplete="current-password" required aria-label="Password" />
+      <h2>Access code</h2>
+      <p>Enter your access code to create books.</p>
+      <input id="pwInput" type="password" autocomplete="current-password" required aria-label="Access code" />
       <p class="error" id="pwError"></p>
       <div class="row end">
         <button type="button" class="ghost" id="pwCancel">Cancel</button>
@@ -47,9 +47,8 @@
 
   <footer class="foot">
     <a href="/privacy.html">Privacy</a>
-    <span>Payments run in Stripe test mode: no real money moves.</span>
   </footer>
 
-  <script src="app.js?v=5" type="module"></script>
+  <script src="app.js?v=6" type="module"></script>
 </body>
 </html>

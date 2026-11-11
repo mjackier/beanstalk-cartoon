@@ -20,6 +20,12 @@ What still needs work in the storybook (homework 4: 20 pages, two stories, one t
 - [x] The Account page said the bible and scenes cost "$0.00"; they were drawn before cost tracking. It now says "not tracked".
 - [ ] 12 of 14 full-page slots still put the text under the picture; redraw those scenes with clear sky.
 
+## Professor's cleanup ("AI mess-ups")
+- [x] The Account page advertised the free test card (4242) and "no real money moves"; the footer said "Payments run in Stripe test mode". Customers no longer see any of it; the test-card note shows only to admins.
+- [x] Anyone could refund their balance to the card with one button. Refunds are now an admin/support tool (the server refuses them for customers).
+- [x] Customers could see our cost per book and margin. The cost tracking is now shown only to admins (Account page and each book).
+- [x] The password box talked about "the class password" and "real money"; it's now a plain access code.
+
 ## From review-log.md run 2 (98/100)
 - [ ] The Account page's average cost ($1.41) still includes the two books made before the cost fix; books now cost about $0.53. Show the average for the current settings.
 - [ ] Little Red's hair under the hood is still longer than the child's on most pages (pp. 1, 4, 5, 8). Redraw the stand-in Red with short hair tucked into the hood.
