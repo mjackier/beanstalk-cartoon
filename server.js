@@ -92,7 +92,8 @@ function img(row, thumb = true) {
   return row ? `/api/images/${row.id}?v=${row.v}${thumb ? "&thumb=1" : ""}` : null;
 }
 
-async function bookJson(book, userId) {
+async function bookJson(book, user) {
+  const userId = user.id;
   const images = await store.listImages(book.id);
   const docs = await store.listDocuments(userId, book.id);
   const hero = images.find((i) => i.kind === "hero" || i.kind === "reference");
@@ -136,7 +137,7 @@ async function bookJson(book, userId) {
     documents: docs.map((d) => ({ id: d.id, url: `/api/documents/${d.id}`, pages: d.pages, bytes: d.bytes, created_at: d.created_at })),
     heroJob: pipeline.heroJob(book.id),
     heroAttempts: hero?.meta?.attempts?.length || 0,
-    cost: story ? await store.bookCost(book.id) : null,
+    cost: story && isAdmin(user) ? await store.bookCost(book.id) : null, // admins only
     priceCents: PRICE_CENTS,
     job: pipeline.bookJob(book.id),
   };
@@ -171,11 +172,11 @@ app.post("/api/books", requireUser, async (req, res) => {
   if (!STORIES[body.story]) throw new HttpError(400, "Choose a story.");
   const book = await store.createBook(req.user.id, body);
   await store.logEvent({ userId: req.user.id, bookId: book.id, type: "book_created", detail: { story: book.story } });
-  res.status(201).json(await bookJson(book, req.user.id));
+  res.status(201).json(await bookJson(book, req.user));
 });
 
 app.get("/api/books/:id", requireUser, async (req, res) => {
-  res.json(await bookJson(await loadBook(req), req.user.id));
+  res.json(await bookJson(await loadBook(req), req.user));
 });
 
 // Light polling endpoint for the progress view.
@@ -302,7 +303,8 @@ app.get("/api/account", requireUser, async (req, res) => {
     store.listRefunds(req.user.id),
   ]);
   const open = (t) => refunds.filter((r) => r.topup_id === t.id && ["requested", "processing"].includes(r.status)).reduce((s, r) => s + r.amount_cents, 0);
-  const costs = await store.costSummary();
+  const admin = isAdmin(req.user);
+  const costs = admin ? await store.costSummary() : null; // business numbers: admins only
   res.json({
     costs,
     balance: user.balance_cents,
@@ -353,7 +355,11 @@ app.get("/pay/return", requireUser, async (req, res) => {
 });
 
 // A refund is requested (money reserved at once), then processed with Stripe straight away.
-app.post("/api/account/refunds", requireUser, async (req, res) => {
+// Refunds are a support/admin tool, not a customer button (so test-card funds can't be cashed out).
+app.post("/api/account/refunds", requireUser, (req, _res, next) => {
+  if (!isAdmin(req.user)) throw new HttpError(403, "Refunds are handled by support. Contact us if you need one.");
+  return next();
+}, async (req, res) => {
   const body = await jsonBody(req);
   const cents = Math.round(Number(body.amount) * 1) || 0;
   if (cents <= 0) throw new HttpError(400, "Enter an amount to refund.");

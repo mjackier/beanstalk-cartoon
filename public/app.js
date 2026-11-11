@@ -290,7 +290,7 @@ async function newBook(resumeId) {
       : !okName
       ? "Add the child's name."
       : broke
-      ? `A book costs ${money(state.config.priceCents)}; your balance is ${money(state.me.balance)}. Payments are in Stripe test mode.`
+      ? `A book costs ${money(state.config.priceCents)}; your balance is ${money(state.me.balance)}.`
       : hero.status === "done"
       ? "Ready. The book takes about a minute."
       : "The hero is being drawn now; you can start already.";
@@ -531,8 +531,8 @@ function finishedView(book) {
       })
       .join("")}</div>
     ${
-      book.cost?.usd
-        ? `<section class="sheet" style="margin-top:22px"><h3>What this book cost to make</h3>
+      state.me.admin && book.cost?.usd
+        ? `<section class="sheet" style="margin-top:22px"><h3>What this book cost to make <span class="muted small">(admin only)</span></h3>
             <p><strong>$${book.cost.usd.toFixed(2)}</strong> in API calls, against the ${money(book.priceCents)} price:
             ${book.cost.imageCalls} image calls ($${book.cost.imageUsd.toFixed(2)}, of which ${book.cost.retryImageCalls} redraw${book.cost.retryImageCalls === 1 ? "" : "s"})
             and ${book.cost.checkCalls} vision checks ($${book.cost.checkUsd.toFixed(2)}). Hero portrait: ${book.heroAttempts || 1} tr${(book.heroAttempts || 1) === 1 ? "y" : "ies"}.</p></section>`
@@ -564,6 +564,9 @@ async function account(query = "") {
   if (params.has("funded") || params.has("then")) history.replaceState(null, "", "#/account");
   const resume = read("resume-book");
   const kindWords = { topup: "Funds added", document: "Book made", refund: "Refund", auto_refund: "Returned to balance" };
+  // Testing tools (test card hint, refunds) and business numbers (cost per book) are for the
+  // site's admins only; customers never see them.
+  const admin = Boolean(state.me.admin);
   view.innerHTML = `
     <h1>Account</h1>
     ${
@@ -577,14 +580,15 @@ async function account(query = "") {
           <p class="muted" style="margin:0">Balance</p>
           <p class="balance">${money(a.balance)}</p>
           <p class="muted small">Each book costs ${money(a.priceCents)}. That's ${Math.floor(a.balance / a.priceCents)} book${Math.floor(a.balance / a.priceCents) === 1 ? "" : "s"}.</p>
-          ${a.payments.some((p) => p.refundable > 0) ? `<a class="button" href="#refunds" id="toRefunds">Request a refund</a>` : ""}
+          ${admin && a.payments.some((p) => p.refundable > 0) ? `<a class="button" href="#refunds" id="toRefunds">Refund (admin)</a>` : ""}
           <h3 style="margin-top:18px">Add funds</h3>
           <div class="amounts">${a.topupChoices.map((c) => `<button class="${c === 500 ? "primary" : ""}" data-topup="${c}">${money(c)}</button>`).join("")}</div>
-          <p class="testcard">Stripe test mode: pay with card <code>4242 4242 4242 4242</code>, any future date, any CVC. No real money moves.</p>
+          <p class="muted small">Secure checkout by Stripe.</p>
+          ${admin ? `<p class="testcard"><strong>Admin only:</strong> the site runs on a Stripe test key, so test card <code>4242 4242 4242 4242</code> (any future date, any CVC) works.</p>` : ""}
           <p class="error" id="topupError"></p>
         </section>
-        <section class="sheet">
-          <h3>What a book costs to make</h3>
+        ${admin ? `<section class="sheet">
+          <h3>What a book costs to make <span class="muted small">(admin only)</span></h3>
           ${
             a.costs.books
               ? `<p class="balance" style="font-size:34px">$${a.costs.avg.toFixed(2)}</p>
@@ -593,9 +597,9 @@ async function account(query = "") {
                  <p class="muted small">Cheapest $${a.costs.min.toFixed(2)}, most expensive $${a.costs.max.toFixed(2)}. Not included: the one-off cost of drawing the character bible and the 40 shared scenes (${a.costs.setupTracked ? `$${a.costs.setupUsd.toFixed(2)} tracked so far` : "not tracked: they were drawn before cost tracking started"}).</p>`
               : `<p class="muted">No books made since cost tracking started.</p>`
           }
-        </section>
-        <section class="sheet">
-          <h3 id="refunds">Request a refund</h3>
+        </section>` : ""}
+        ${admin ? `<section class="sheet">
+          <h3 id="refunds">Refunds <span class="muted small">(admin only)</span></h3>
           <p class="muted small">Get unspent money back on the card you paid with.</p>
           ${
             a.payments.length
@@ -635,7 +639,7 @@ async function account(query = "") {
               : ""
           }
           <p class="error" id="refundError"></p>
-        </section>
+        </section>` : ""}
       </div>
       <section class="sheet">
         <h2>History</h2>
