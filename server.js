@@ -13,6 +13,7 @@ import * as lulu from "./lib/lulu.js";
 import { priceFor, SHIPPING, PRINT_PRICE_CENTS } from "./lib/pricing.js";
 import { sign, verify } from "./lib/session.js";
 import { rebuildReadingPdf, buildPrintFiles, READING_PAGES } from "./book/print.js";
+import { coverLayout as coverLayoutFor } from "./book/pdf.js";
 import { STORIES, STORY_IDS } from "./book/stories.js";
 import { TEMPLATE, LAYOUTS } from "./book/template.js";
 import { createPipeline, PRICE_CENTS } from "./book/pipeline.js";
@@ -537,16 +538,24 @@ app.get("/api/admin/print-check/:kind/:vid", requireUser, requireAdmin, async (r
   res.json(req.params.kind === "cover" ? await lulu.getCoverValidation(id) : await lulu.getInteriorValidation(id));
 });
 
-app.post("/api/admin/print-quote", requireUser, requireAdmin, async (req, res) => {
-  const body = await jsonBody(req);
+// GET works too, so an admin can open it in the browser: /api/admin/print-quote
+app.get("/api/admin/print-quote", requireUser, requireAdmin, async (req, res) => printQuoteAll(req, res, {}));
+app.post("/api/admin/print-quote", requireUser, requireAdmin, async (req, res) => printQuoteAll(req, res, await jsonBody(req)));
+async function printQuoteAll(req, res, body) {
   const address = cleanAddress(
     body.address || { name: "Test Parent", street1: "1600 Pennsylvania Ave NW", city: "Washington", state_code: "DC", postcode: "20500", phone_number: "2025550123" },
     req.user
   );
   const out = {};
   for (const level of Object.keys(SHIPPING)) out[level] = await quoteFor(address, level).catch((e) => ({ error: e.message }));
-  res.json({ podPackageId: lulu.POD_PACKAGE_ID(), sandbox: lulu.isSandbox(), quotes: out });
-});
+  let cover = null;
+  try {
+    cover = coverLayoutFor(await lulu.coverDimensions(24));
+  } catch (e) {
+    cover = { error: e.message };
+  }
+  res.json({ podPackageId: lulu.POD_PACKAGE_ID(), sandbox: lulu.isSandbox(), address, cover, quotes: out });
+}
 
 app.get("/api/activity", requireUser, async (req, res) => res.json(await store.recentEvents(req.user.id, 60)));
 
