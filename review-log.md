@@ -68,3 +68,38 @@ Fix first:
 4. Three Red pages needed a second try for likeness → test whether a higher-quality hero portrait cuts redraws (time and cost).
 5. Page numbers on the paper pages are very small → larger.
 
+
+## Run 3 — 2026-11-13 — reviewer: self (Mattan + Claude) — browser: Claude in Chrome (Mattan's Chrome, his Google sign-in; not a private window)
+Total 99 (was 98)
+PDF 40/40 · UI 20/20 · Money 19/20 · Engineering 20/20
+Little Red (new photo, IMG_0629, never used before): "Make the book" 10:49:15 → PDF ready by 10:49:57 (41 s; server stats 40.7 s)
+Jack (same photo): "Make the book" 10:56:15 → PDF ready 10:56:41 (26 s; server stats 26.2 s)
+Balance: 0.00 (10:41) → fund 5.00 → generate Red 4.01 → generate Jack 3.02 → printed copy refused (402, "The printed book is $39.99 and your balance is $3.02. Add funds first.") → fund 20.00 → 23.02 → fund 20.00 → 43.02 → refund $1.00 → 42.02 (re_3UbN2wD77uFrOgI51WECGHko, shown without reload) → sandbox print order −39.99 → 2.03
+History: +5.00 10:48 · −0.99 Red 10:49 · −0.99 Jack 10:56 · +20.00 11:09 · +20.00 11:09 · −1.00 refund 11:10 · −39.99 print order 11:11; 0 + 5 − 0.99 − 0.99 + 20 + 20 − 1 − 39.99 = 2.03 ✓
+Avg cost per book: $0.50 Red, $0.51 Jack (Red: 21 image calls incl. 3 redraws, 23 checks; Jack: 21 image calls, 0 redraws, 22 checks); last 5 books $0.52; all 8 tracked books $1.07 (price $0.99)
+Not measured: "generation refused when short" was checked on the printed-book order ($3.02 < $39.99), not on a $0.99 PDF this run (the balance was funded before the first book; run 2 showed the PDF refusal)
+
+Changed since run 2 (homework 5: print it and ship it):
+- Real-book layout: front cover "Little Red Riding Hood / starring Mattan"; p.2 copyright notice and publisher; story pages 1–20 on pp. 3–22; The End, a drawing page, a dedication; About Me is the back cover. 26-page reading PDF, 11 × 8.5 in.
+- About Me check before anything is drawn or charged: rules + OpenAI moderation + a real-name check. Live: "I hate school" in About was refused with "Nothing was charged. Please change this first" and the field outlined; with that sentence removed the book went through.
+- Printed copy: approve the PDF (checkbox) → address → live quote from Lulu → order paid from the balance → Lulu sandbox print job. Live: quote $39.99 (Lulu $23.95 all in, Stripe ~$1.46, margin $14.58, admin-only line); order placed 11:11; Lulu sandbox portal shows Print Job #363851 "beanstalk-order-1", status moved CREATED → UNPAID by 11:13 (Lulu fetched and accepted both print files; nothing is printed in the sandbox).
+
+Evidence:
+- Site opened in 0.37 s (first byte 0.09 s).
+- Both PDFs: 26 pages = front cover + copyright + 20 story pages + The End + drawing page + dedication + About Me back cover. Same layout on the same page numbers in both (band on story pages 1, 2, 4, 5, 7, 9, 10, 12, 13, 15, 16, 18, 20; split on 3, 8, 11, 17; vignette on 6, 14, 19).
+- Same child on every page of both books: glasses, dark hair, same face (compared pp. 1, 10, 20 and About Me); Red's hair under the hood now matches the photo.
+- No text over any face or must-see detail on any page of either PDF: every caption is on the paper beside or under the art. Text is typeset (pdftotext extracts p.3 "Once upon a time, Jack lived with his mother…" word for word).
+- Progress bar named each stage ("Step 3 of 5: Checking every picture · 16 of 20 done · 2 being checked · 2 being redrawn"); thumbnails appeared one at a time with "try N of 3"; Red pages 2, 3 and 18 show try 2.
+- Sign out → /api/documents/11 returns 401 → sign in → both new PDFs download (200, %PDF, 4,623,131 and 4,526,437 bytes).
+- 400 px (signed-in page in a 400 px frame): New book and the finished book with the print form fit (scrollWidth 383 ≤ 397), no sideways scroll.
+- Repo: no key in any commit (git log -p --all), none in public/app.js; only .env.example tracked. Lulu keys only in Render's env group.
+
+Deductions:
+- Money −1: the Account page's headline average ($1.07 over 8 books, "about $-0.08 margin per book") still mixes in books made before the cost fix; books now cost $0.50–0.52.
+
+Fix first:
+1. Account page headline cost ($1.07, "−$0.08 margin") is wrong for the current settings ($0.52) and now that the printed book exists, it should show the printed-book margin too (Money −1).
+2. After signing out, the browser still opened the PDF from its own cache for a day (Cache-Control: private, max-age=86400); the server said 401. Fixed in this branch: PDFs are sent with no-store.
+3. All 7 full-page slots fell back to "text under the picture" in both books; the book reads fine but loses its full-bleed pages. Redraw those scenes with empty sky for the caption.
+4. The About Me check refused "I hate school", an ordinary kid's sentence; loosen the model's instructions so only insults, slurs and unsafe content are refused.
+5. The "add funds" refusal for a printed copy took ~10 s because the print files were built before the balance check. Fixed in this branch: balance first.
