@@ -778,9 +778,15 @@ async function account(query = "") {
           <h3>What a book costs to make <span class="muted small">(admin only)</span></h3>
           ${
             a.costs.books
-              ? `<p class="balance" style="font-size:34px">$${a.costs.avg.toFixed(2)}</p>
-                 <p class="small">Average API cost per book over ${a.costs.books} book${a.costs.books === 1 ? "" : "s"} (image calls, redraws and vision checks), against the <strong>${money(a.priceCents)}</strong> price: about $${(a.priceCents / 100 - a.costs.avg).toFixed(2)} margin per book.</p>
-                 ${a.costs.recent?.books && a.costs.recent.books < a.costs.books ? `<p class="small">Last ${a.costs.recent.books} books: <strong>$${a.costs.recent.avg.toFixed(2)}</strong> each on average.</p>` : ""}
+              ? (() => {
+                  // Headline = the books made with the current settings (the last 5); all-time is shown underneath.
+                  const cur = a.costs.recent?.books ? a.costs.recent : a.costs;
+                  const pp = (c) => (c < 0 ? "−" : "") + "$" + Math.abs(c).toFixed(2);
+                  return `<p class="balance" style="font-size:34px">$${cur.avg.toFixed(2)}</p>
+                 <p class="small">Average API cost per book over the last ${cur.books} book${cur.books === 1 ? "" : "s"} (image calls, redraws and vision checks), against the <strong>${money(a.priceCents)}</strong> price: about ${pp(a.priceCents / 100 - cur.avg)} margin per book.</p>
+                 ${a.costs.books > cur.books ? `<p class="muted small">All ${a.costs.books} tracked books, including ones made before the cost fix: $${a.costs.avg.toFixed(2)} each.</p>` : ""}
+                 <p class="small">A printed copy is $39.99 shipped; Lulu charges us about $23.95 for it (print, standard shipping, fee, tax), so about $14.58 margin after Stripe.</p>`;
+                })() + `
                  <p class="muted small">Cheapest $${a.costs.min.toFixed(2)}, most expensive $${a.costs.max.toFixed(2)}. Not included: the one-off cost of drawing the character bible and the 40 shared scenes (${a.costs.setupTracked ? `$${a.costs.setupUsd.toFixed(2)} tracked so far` : "not tracked: they were drawn before cost tracking started"}).</p>`
               : `<p class="muted">No books made since cost tracking started.</p>`
           }

@@ -288,7 +288,7 @@ app.get("/api/documents/:id", requireUser, async (req, res) => {
   res
     .set("Content-Type", "application/pdf")
     .set("Content-Disposition", `${req.query.inline ? "inline" : "attachment"}; filename="${name}.pdf"`)
-    .set("Cache-Control", "private, max-age=86400")
+    .set("Cache-Control", "private, no-store") // a signed-out browser must not keep serving it from cache
     .send(doc.data);
   store.logEvent({ userId: req.user.id, bookId: null, type: "pdf_downloaded", detail: { documentId: doc.id } }).catch(() => {});
 });
@@ -463,6 +463,13 @@ app.post("/api/books/:id/print-order", requireUser, async (req, res) => {
   if (Number(body.expectedPriceCents) !== q.priceCents) {
     throw new HttpError(409, `The price for this address is now ${money(q.priceCents)}. Check it and place the order again.`, {
       extra: { priceCents: q.priceCents },
+    });
+  }
+  // Say "add funds" before spending time building print files.
+  const me0 = await store.getUser(req.user.id);
+  if (me0.balance_cents < q.priceCents) {
+    throw new HttpError(402, `The printed book is ${money(q.priceCents)} and your balance is ${money(me0.balance_cents)}. Add funds first.`, {
+      extra: { needFunds: true, balance: me0.balance_cents },
     });
   }
   const dims = await lulu.coverDimensions(24);
