@@ -15,10 +15,10 @@ What still needs work in the storybook (homework 5: print it and ship it, on top
 - [ ] A spine title (Lulu only allows spine text from 80 pages; ours has 24).
 
 ## From review-log.md run 3 (99/100)
-- [ ] The Account page's headline average cost ($1.07 over 8 books) still mixes in the books made before the cost fix; books cost $0.50–0.52 now. Show the current average, and the printed-book margin.
+- [x] The Account page's headline average cost ($1.07 over 8 books) mixed in the books made before the cost fix. It now shows the last 5 books ($0.52) and the printed-book margin; the all-time number is underneath.
 - [x] After signing out, the browser could still reopen a PDF from its cache (max-age 1 day). PDFs are now sent with no-store.
 - [ ] All 7 full-page slots put the text under the picture in both books. Redraw those scenes with empty sky for the caption.
-- [ ] The About Me check refused "I hate school". Loosen it so only insults, slurs and unsafe content are refused.
+- [x] The About Me check refused "I hate school". The name/details check now allows ordinary kids' complaints and dislikes; only insults, slurs and unsafe content are refused.
 - [x] The "add funds" message for a printed copy took ~10 s (print files were built first). The balance is now checked first.
 
 ## From my review of the first real book (Jack, 52 seconds)
