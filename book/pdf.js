@@ -1,5 +1,16 @@
-// Builds the finished book as a PDF on the server (vendored jsPDF), using the template.
-// Pages: cover, the 20 story pages, About Me.
+// Builds the finished book as PDFs on the server (vendored jsPDF), using the template.
+//
+// The book is a real 11 x 8.5 in landscape hardcover (Lulu casewrap, 24 interior pages):
+//   front cover   the title, "starring <child>", the first picture
+//   interior p1   copyright notice and publisher
+//   interior p2-21  the 20 story pages (the story starts right after the copyright page)
+//   interior p22-24 The End, a page to draw on, a dedication
+//   back cover    About Me
+//
+// Three files come out of the same drawing code, so what the parent approves is what is printed:
+//   buildBookPdf        the reading copy: front cover, the 24 interior pages, back cover (26 pages)
+//   buildPrintInterior  the 24 interior pages with 0.125 in bleed on every side, for the printer
+//   buildPrintCover     one spread (back cover, spine, front cover) sized from Lulu's cover dimensions
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import { LAYOUTS, PAGE_W, PAGE_H, TEMPLATE } from "./template.js";
@@ -35,8 +46,16 @@ const PAPER = [248, 243, 231];
 const MUTED = [118, 108, 90];
 const LEAF = [52, 108, 60];
 
-function newDoc() {
-  const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: [PAGE_W, PAGE_H], compress: true });
+// The trim (finished page) is 792 x 612 pt. The 3:2 story design (PAGE_W x PAGE_H = 792 x 528)
+// sits ART_DY down from the top, leaving a paper band underneath for the page number.
+export const TRIM_W = 792;
+export const TRIM_H = 612;
+export const ART_DY = 34;
+export const BLEED = 9; // 0.125 in
+export const INTERIOR_PAGES = 24;
+
+function newDoc(size = [PAGE_W, PAGE_H]) {
+  const doc = new jsPDF({ orientation: size[0] >= size[1] ? "landscape" : "portrait", unit: "pt", format: size, compress: true });
   const fonts = loadFonts();
   if (fonts) {
     for (const [style, b64] of Object.entries(fonts)) {
@@ -53,9 +72,22 @@ const font = (doc, style, size) => {
   doc.setFontSize(size);
 };
 
-function paper(doc) {
-  doc.setFillColor(...PAPER);
-  doc.rect(0, 0, PAGE_W, PAGE_H, "F");
+// Fill the whole physical page (including any bleed). Call outside shift().
+function fillPage(doc, color = PAPER) {
+  doc.setFillColor(...color);
+  doc.rect(0, 0, doc.internal.pageSize.getWidth(), doc.internal.pageSize.getHeight(), "F");
+}
+
+// Draw fn() with the origin moved right by dx and down by dy (a PDF "cm" translation).
+function shift(doc, dx, dy, fn) {
+  if (!dx && !dy) return fn();
+  doc.saveGraphicsState();
+  doc.setCurrentTransformationMatrix(new doc.Matrix(1, 0, 0, 1, dx, -dy));
+  try {
+    return fn();
+  } finally {
+    doc.restoreGraphicsState();
+  }
 }
 
 function drawArt(doc, jpeg, box, alias) {
@@ -87,20 +119,11 @@ function writeLines(doc, f, x, y, width, align = "center", color = INK) {
   });
 }
 
-function pageNumber(doc, n, onArt) {
-  font(doc, "normal", 11);
-  if (onArt) {
-    doc.saveGraphicsState();
-    doc.setGState(new doc.GState({ opacity: 0.88 }));
-    doc.setFillColor(...PAPER);
-    doc.circle(PAGE_W - 24, PAGE_H - 24, 12, "F");
-    doc.restoreGraphicsState();
-    doc.setTextColor(...INK);
-    doc.text(String(n), PAGE_W - 24, PAGE_H - 20.2, { align: "center" });
-  } else {
-    doc.setTextColor(...MUTED);
-    doc.text(String(n), PAGE_W / 2, PAGE_H - 10, { align: "center" });
-  }
+// Page numbers sit in the paper band under the art (trim coordinates), inside the 0.5 in safety margin.
+function pageNumber(doc, n) {
+  font(doc, "normal", 13);
+  doc.setTextColor(...MUTED);
+  doc.text(String(n), TRIM_W / 2, TRIM_H - 36, { align: "center" });
 }
 
 // Height of the caption panel for some text at a width, as a fraction of the page height.
@@ -143,61 +166,74 @@ export function planPage(doc, slot, text, boxes, scenePanel) {
   return { layout: slot.layout };
 }
 
-function drawStoryPage(doc, { slot, text, jpeg, boxes, alias, scenePanel }) {
+// One story page, in trim coordinates. `bleed` stretches full-page art into the print bleed.
+function drawStoryPage(doc, { slot, text, jpeg, boxes, alias, scenePanel, bleed = 0 }) {
   const plan = planPage(doc, slot, text, boxes, scenePanel);
-  if (plan.layout === "full") {
-    const art = LAYOUTS.full.art;
-    drawArt(doc, jpeg, art, alias);
-    const r = plan.panel.rect;
-    const px = art.x + r.x * art.w;
-    const py = art.y + r.y * art.h;
-    const pw = r.w * art.w;
-    const ph = r.h * art.h;
-    doc.saveGraphicsState();
-    doc.setGState(new doc.GState({ opacity: 0.9 }));
-    doc.setFillColor(...PAPER);
-    doc.roundedRect(px, py, pw, ph, 12, 12, "F");
-    doc.restoreGraphicsState();
-    const f = fit(doc, text, pw - 32, 999, { max: 23, min: 23 });
-    writeLines(doc, f, px + 16, py + Math.max(13, (ph - f.h) / 2 - 3), pw - 32, "center");
-    pageNumber(doc, slot.n, true);
-    return plan;
-  }
-  paper(doc);
-  const L = LAYOUTS[plan.layout];
-  drawArt(doc, jpeg, L.art, alias);
-  const f = fit(doc, text, L.text.w, L.text.h, { max: plan.layout.startsWith("split") ? 20 : 22, min: 13 });
-  const ty = L.text.y + Math.max(0, (L.text.h - f.h) / 2) - 4;
-  writeLines(doc, f, L.text.x, ty, L.text.w, plan.layout.startsWith("split") ? "left" : "center");
-  pageNumber(doc, slot.n, false);
+  shift(doc, 0, ART_DY, () => {
+    if (plan.layout === "full") {
+      // Uniformly scaled so the art reaches the left and right bleed (no distortion, nothing cropped).
+      const w = PAGE_W + 2 * bleed;
+      const h = (w * PAGE_H) / PAGE_W;
+      const art = { x: -bleed, y: (PAGE_H - h) / 2, w, h };
+      drawArt(doc, jpeg, art, alias);
+      const r = plan.panel.rect;
+      const px = art.x + r.x * art.w;
+      const py = art.y + r.y * art.h;
+      const pw = r.w * art.w;
+      const ph = r.h * art.h;
+      doc.saveGraphicsState();
+      doc.setGState(new doc.GState({ opacity: 0.9 }));
+      doc.setFillColor(...PAPER);
+      doc.roundedRect(px, py, pw, ph, 12, 12, "F");
+      doc.restoreGraphicsState();
+      const f = fit(doc, text, pw - 32, 999, { max: 23, min: 23 });
+      writeLines(doc, f, px + 16, py + Math.max(13, (ph - f.h) / 2 - 3), pw - 32, "center");
+      return;
+    }
+    const L = LAYOUTS[plan.layout];
+    drawArt(doc, jpeg, L.art, alias);
+    const f = fit(doc, text, L.text.w, L.text.h, { max: plan.layout.startsWith("split") ? 20 : 22, min: 13 });
+    const ty = L.text.y + Math.max(0, (L.text.h - f.h) / 2) - 4;
+    writeLines(doc, f, L.text.x, ty, L.text.w, plan.layout.startsWith("split") ? "left" : "center");
+  });
+  pageNumber(doc, slot.n);
   return plan;
 }
 
-function drawCover(doc, { title, heroName, childName, jpeg }) {
+const fmtDate = (d) => new Date(d || Date.now()).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric", timeZone: "America/New_York" });
+
+// Front cover, trim coordinates: "<Title>", "starring <Name>", the first picture.
+function drawFrontCover(doc, { title, childName, jpeg }) {
   doc.setFillColor(...LEAF);
-  doc.rect(0, 0, PAGE_W, PAGE_H, "F");
+  doc.rect(0, 0, TRIM_W, TRIM_H, "F");
   doc.setFillColor(...PAPER);
-  doc.roundedRect(24, 24, PAGE_W - 48, PAGE_H - 48, 18, 18, "F");
-  const art = { x: 216, y: 150, w: 360, h: 240 };
-  drawArt(doc, jpeg, art, "cover");
-  font(doc, "bold", 40);
+  doc.roundedRect(40, 40, TRIM_W - 80, TRIM_H - 80, 18, 18, "F");
+  let size = 44;
+  font(doc, "bold", size);
+  while (doc.getTextWidth(title) > TRIM_W - 160 && size > 28) font(doc, "bold", (size -= 2));
   doc.setTextColor(...LEAF);
-  doc.text(title, PAGE_W / 2, 98, { align: "center" });
-  font(doc, "italic", 18);
+  doc.text(title, TRIM_W / 2, 118, { align: "center" });
+  font(doc, "italic", 26);
   doc.setTextColor(...INK);
-  doc.text(`starring ${childName} as ${heroName}`, PAGE_W / 2, 128, { align: "center" });
+  doc.text(`starring ${childName}`, TRIM_W / 2, 158, { align: "center" });
+  const art = { x: (TRIM_W - 465) / 2, y: 190, w: 465, h: 310 };
+  drawArt(doc, jpeg, art, "cover");
   font(doc, "normal", 12);
   doc.setTextColor(...MUTED);
-  doc.text("A storybook made just for you", PAGE_W / 2, 428, { align: "center" });
+  doc.text("Beanstalk Storybook", TRIM_W / 2, 532, { align: "center" });
 }
 
-function drawAboutMe(doc, { name, age, favorites, about, heroName, portrait }) {
-  paper(doc);
-  const pw = 300;
-  drawArt(doc, portrait, { x: 48, y: (PAGE_H - pw) / 2, w: pw, h: pw }, "portrait");
-  const x = 48 + pw + 44;
-  const maxW = PAGE_W - x - 48;
-  let y = 120;
+// Back cover, trim coordinates: About Me.
+function drawBackCover(doc, { name, age, favorites, about, heroName, portrait }) {
+  doc.setFillColor(...LEAF);
+  doc.rect(0, 0, TRIM_W, TRIM_H, "F");
+  doc.setFillColor(...PAPER);
+  doc.roundedRect(40, 40, TRIM_W - 80, TRIM_H - 80, 18, 18, "F");
+  const pw = 280;
+  drawArt(doc, portrait, { x: 76, y: (TRIM_H - pw) / 2, w: pw, h: pw }, "portrait");
+  const x = 76 + pw + 40;
+  const maxW = TRIM_W - x - 76;
+  let y = 150;
   font(doc, "bold", 38);
   doc.setTextColor(...LEAF);
   doc.text("About Me", x, y);
@@ -236,45 +272,169 @@ function drawAboutMe(doc, { name, age, favorites, about, heroName, portrait }) {
       .every((item) => about.toLowerCase().includes(item));
   if (!repeated) field("Favourite things", favorites);
   if (about) {
-    font(doc, "italic", 16);
-    doc.setTextColor(...INK);
-    for (const l of doc.splitTextToSize(about, maxW)) {
-      doc.text(l, x, y);
-      y += 22;
-    }
+    const f = fit(doc, about, maxW, TRIM_H - 110 - y, { max: 16, min: 11, style: "italic" });
+    f.lines.forEach((l, i) => doc.text(l, x, y + f.size + i * f.lineH));
   }
   font(doc, "italic", 12);
   doc.setTextColor(...MUTED);
-  doc.text(`Starring ${name} as ${heroName}`, x, PAGE_H - 56);
+  doc.text(`Starring ${name} as ${heroName}`, x, TRIM_H - 84);
 }
 
-// pages: [{ jpeg: Buffer, boxes }], 20 of them in template order.
+function centered(doc, lines, y, { style = "normal", size = 11, color = INK, gap = 1.45 } = {}) {
+  font(doc, style, size);
+  doc.setTextColor(...color);
+  for (const line of lines) {
+    for (const l of doc.splitTextToSize(line, TRIM_W - 240)) {
+      doc.text(l, TRIM_W / 2, y, { align: "center" });
+      y += size * gap;
+    }
+  }
+  return y;
+}
+
+export const PUBLISHER = process.env.PUBLISHER_NAME || "Beanstalk Storybook (Mattan Jackier)";
+export const PUBLISHER_SITE = process.env.PUBLISHER_SITE || "beanstalk.jackier.xyz";
+
+// Interior page 1: the copyright notice and the publisher.
+function drawCopyright(doc, { title, childName, date }) {
+  const year = new Date(date || Date.now()).getFullYear();
+  let y = 300;
+  y = centered(doc, [`${title}, starring ${childName}`], y, { style: "bold", size: 14 });
+  y += 10;
+  y = centered(
+    doc,
+    [
+      `Copyright © ${year} ${PUBLISHER}. All rights reserved.`,
+      `Published by ${PUBLISHER}, ${PUBLISHER_SITE}`,
+      `Personalized edition made for ${childName} on ${fmtDate(date)}.`,
+    ],
+    y
+  );
+  y += 10;
+  centered(
+    doc,
+    [
+      "Adapted from the traditional folk tale. Illustrations made with AI from a photo shared by the family, for this one book.",
+      "No part of this book may be reproduced, stored or shared without written permission from the publisher.",
+      "First edition. Printed on demand.",
+    ],
+    y,
+    { size: 10, color: MUTED }
+  );
+}
+
+function drawTheEnd(doc) {
+  font(doc, "bold", 54);
+  doc.setTextColor(...LEAF);
+  doc.text("The End", TRIM_W / 2, TRIM_H / 2, { align: "center" });
+}
+
+function drawYourPicture(doc, { childName }) {
+  centered(doc, [`${childName}, draw your favourite part of the story`], 92, { style: "italic", size: 20 });
+  doc.setDrawColor(...MUTED);
+  doc.setLineWidth(1.2);
+  doc.setLineDashPattern([6, 5], 0);
+  doc.roundedRect(96, 124, TRIM_W - 192, TRIM_H - 200, 14, 14, "S");
+  doc.setLineDashPattern([], 0);
+}
+
+function drawDedication(doc, { childName, date }) {
+  centered(doc, ["This book was made for", childName], 270, { style: "italic", size: 22, gap: 1.6 });
+  centered(doc, [fmtDate(date)], 360, { size: 13, color: MUTED });
+}
+
 // "mattan" -> "Mattan" (a name typed all in lower case looks like a typo on a cover)
 export const displayName = (name) =>
   name && name === name.toLowerCase() ? name.replace(/(^|[\s-])(\p{L})/gu, (_, a, b) => a + b.toUpperCase()) : name;
 
-export function buildBookPdf({ story, book: rawBook, pages, portrait }) {
+function prepare({ story, book: rawBook }) {
   const book = { ...rawBook, child_name: displayName(rawBook.child_name) };
-  const doc = newDoc();
-  doc.setProperties({ title: `${story.title}, starring ${book.child_name}`, subject: "A personalised storybook", creator: "Beanstalk Storybook" });
-  drawCover(doc, { title: story.title, heroName: story.heroName, childName: book.child_name, jpeg: pages[0].jpeg });
+  const title = story.title;
+  const meta = { title: `${title}, starring ${book.child_name}`, subject: "A personalised storybook", creator: PUBLISHER, author: PUBLISHER };
+  return { book, title, meta, date: book.created_at };
+}
+
+// The 24 interior pages, each a function drawing in trim coordinates. Collects the story-page plans.
+function interior({ story, book, pages, title, date }, plans, bleed) {
+  const childName = book.child_name;
+  return [
+    (doc) => drawCopyright(doc, { title, childName, date }),
+    ...pages.map((p, i) => (doc) => {
+      const slot = TEMPLATE[i];
+      const text = personalize(story.pages[i].text, book.pronouns);
+      plans.push({ n: slot.n, ...drawStoryPage(doc, { slot, text, jpeg: p.jpeg, boxes: p.boxes || [], alias: `p${i + 1}`, scenePanel: p.scenePanel, bleed }) });
+    }),
+    (doc) => drawTheEnd(doc),
+    (doc) => drawYourPicture(doc, { childName }),
+    (doc) => drawDedication(doc, { childName, date }),
+  ];
+}
+
+const aboutOf = (story, book, portrait) => ({
+  name: book.child_name,
+  age: book.child_age,
+  favorites: book.child_favorites,
+  about: book.child_about,
+  heroName: story.heroName,
+  portrait,
+});
+
+// pages: [{ jpeg: Buffer, boxes, scenePanel }], 20 of them in template order.
+// The reading copy: front cover, 24 interior pages, back cover, all at trim size.
+export function buildBookPdf({ story, book: rawBook, pages, portrait }) {
+  const { book, title, meta, date } = prepare({ story, book: rawBook });
+  const doc = newDoc([TRIM_W, TRIM_H]);
+  doc.setProperties(meta);
   const plans = [];
-  pages.forEach((p, i) => {
-    doc.addPage([PAGE_W, PAGE_H], "landscape");
-    const slot = TEMPLATE[i];
-    const text = personalize(story.pages[i].text, book.pronouns);
-    plans.push({ n: slot.n, ...drawStoryPage(doc, { slot, text, jpeg: p.jpeg, boxes: p.boxes || [], alias: `p${i + 1}`, scenePanel: p.scenePanel }) });
+  drawFrontCover(doc, { title, childName: book.child_name, jpeg: pages[0].jpeg });
+  for (const draw of interior({ story, book, pages, title, date }, plans, 0)) {
+    doc.addPage([TRIM_W, TRIM_H], "landscape");
+    fillPage(doc);
+    draw(doc);
+  }
+  doc.addPage([TRIM_W, TRIM_H], "landscape");
+  drawBackCover(doc, aboutOf(story, book, portrait));
+  return { pdf: Buffer.from(doc.output("arraybuffer")), plans, pageCount: doc.getNumberOfPages() };
+}
+
+// The printer's interior file: 24 pages of 810 x 630 pt (trim + 0.125 in bleed on each side).
+export function buildPrintInterior({ story, book: rawBook, pages }) {
+  const { book, title, meta, date } = prepare({ story, book: rawBook });
+  const size = [TRIM_W + 2 * BLEED, TRIM_H + 2 * BLEED];
+  const doc = newDoc(size);
+  doc.setProperties(meta);
+  const plans = [];
+  interior({ story, book, pages, title, date }, plans, BLEED).forEach((draw, i) => {
+    if (i > 0) doc.addPage(size, "landscape");
+    fillPage(doc);
+    shift(doc, BLEED, BLEED, () => draw(doc));
   });
-  doc.addPage([PAGE_W, PAGE_H], "landscape");
-  drawAboutMe(doc, {
-    name: book.child_name,
-    age: book.child_age,
-    favorites: book.child_favorites,
-    about: book.child_about,
-    heroName: story.heroName,
-    portrait,
-  });
-  return { pdf: Buffer.from(doc.output("arraybuffer")), plans, pageCount: pages.length + 2 };
+  if (doc.getNumberOfPages() !== INTERIOR_PAGES) throw new Error(`Interior has ${doc.getNumberOfPages()} pages, expected ${INTERIOR_PAGES}.`);
+  return { pdf: Buffer.from(doc.output("arraybuffer")), pageCount: INTERIOR_PAGES };
+}
+
+// The printer's cover file: one spread, back | spine | front, with the wrap/bleed all around.
+// dims: { width, height } in pt from Lulu's /cover-dimensions/. The wrap is whatever is left
+// around the two trim panels: wrap = (height - trim height) / 2, spine = width - 2 * (trim width + wrap).
+export function coverLayout(dims) {
+  const wrap = (dims.height - TRIM_H) / 2;
+  const spine = dims.width - 2 * (TRIM_W + wrap);
+  if (!(wrap >= 0 && spine >= 0)) throw new Error(`Cover dimensions ${dims.width} x ${dims.height} don't fit an ${TRIM_W} x ${TRIM_H} trim.`);
+  return { width: dims.width, height: dims.height, wrap, spine, back: { x: wrap, y: wrap }, front: { x: wrap + TRIM_W + spine, y: wrap } };
+}
+
+export function buildPrintCover({ story, book: rawBook, pages, portrait, dims }) {
+  const { book, title, meta } = prepare({ story, book: rawBook });
+  const L = coverLayout(dims);
+  const doc = newDoc([L.width, L.height]);
+  doc.setProperties(meta);
+  fillPage(doc, LEAF);
+  shift(doc, L.back.x, L.back.y, () => drawBackCover(doc, aboutOf(story, book, portrait)));
+  // A slightly darker spine. 24 pages is too thin for spine text (Lulu needs 80+ pages for that).
+  doc.setFillColor(40, 88, 48);
+  doc.rect(L.wrap + TRIM_W, 0, L.spine, L.height, "F");
+  shift(doc, L.front.x, L.front.y, () => drawFrontCover(doc, { title, childName: book.child_name, jpeg: pages[0].jpeg }));
+  return { pdf: Buffer.from(doc.output("arraybuffer")), layout: L };
 }
 
 export { newDoc };

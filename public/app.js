@@ -275,7 +275,13 @@ async function newBook(resumeId) {
       save();
     })
   );
-  Object.values(fields).forEach((sel) => $(sel).addEventListener("input", () => (save(), ready())));
+  Object.values(fields).forEach((sel) =>
+    $(sel).addEventListener("input", () => {
+      $(sel).removeAttribute("aria-invalid");
+      save();
+      ready();
+    })
+  );
 
   function ready() {
     const okName = Boolean($("#f-name").value.trim());
@@ -387,6 +393,7 @@ async function newBook(resumeId) {
       return;
     }
     $("#make").disabled = true;
+    $("#make").textContent = "Checking the details…";
     try {
       const id = await ensureBook();
       await api("PATCH", `/api/books/${id}`, { json: { story: draft.story, pronouns: draft.pronouns, ...values() } });
@@ -396,7 +403,14 @@ async function newBook(resumeId) {
       location.hash = `#/book/${id}`;
     } catch (err) {
       if (err.data?.needFunds) $("#makeError").innerHTML = `${esc(err.message)} <a href="#/account">Add funds</a>`;
-      else if (!err.cancelled) $("#makeError").textContent = err.message;
+      else if (err.data?.problems) {
+        // The About Me check said no: say what to change, next to the field. Nothing was charged.
+        $("#makeError").innerHTML =
+          `Nothing was charged. Please change this first:<ul>${err.data.problems.map((p) => `<li>${esc(p.message)}</li>`).join("")}</ul>`;
+        err.data.problems.forEach((p) => fields[p.field] && $(fields[p.field]).setAttribute("aria-invalid", "true"));
+        const first = err.data.problems.find((p) => fields[p.field]);
+        if (first) $(fields[first.field]).focus();
+      } else if (!err.cancelled) $("#makeError").textContent = err.message;
       ready();
     }
   });
@@ -520,6 +534,7 @@ function finishedView(book) {
       ${doc ? `<a class="button primary big" href="${doc.url}">Download PDF</a>` : ""}
     </div>
     ${doc ? `<iframe class="viewer" src="${doc.url}?inline=1#view=Fit" title="The finished book"></iframe>` : ""}
+    <section class="sheet print" id="print" aria-live="polite"><p class="muted">Loading printed copy options…</p></section>
     <h2 style="margin-top:28px">The pictures</h2>
     <p class="muted small">Every picture is checked by a vision model and redrawn if it fails, at most 3 times; if none is perfect, the best is kept. The label on each picture shows its tries.</p>
     <div class="grid">${book.pages
@@ -539,6 +554,178 @@ function finishedView(book) {
         : ""
     }
     <p class="muted small" style="margin-top:16px">Made ${when(book.updated_at)}. This book stays in your account: sign in any time to download it again.</p>`;
+  printSection(book).catch((err) => ($("#print").innerHTML = `<p class="error">${esc(err.message)}</p>`));
+}
+
+// ------------------------------------------------------------------ a printed copy (Lulu)
+const US_STATES = "AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY PR".split(" ");
+const PRINT_STATUS = {
+  CREATED: "Sent to the printer",
+  UNPAID: "Sent to the printer",
+  PAYMENT_IN_PROGRESS: "Sent to the printer",
+  PRODUCTION_DELAYED: "Waiting to be printed",
+  PRODUCTION_READY: "Ready to be printed",
+  IN_PRODUCTION: "Being printed",
+  SHIPPED: "Shipped",
+  REJECTED: "The printer couldn't use the files; we'll be in touch",
+  CANCELED: "Canceled",
+};
+const readAddr = () => {
+  try {
+    return JSON.parse(localStorage.getItem("ship-to") || "{}");
+  } catch {
+    return {};
+  }
+};
+const saveAddr = (a) => {
+  try {
+    localStorage.setItem("ship-to", JSON.stringify(a));
+  } catch {}
+};
+
+async function printSection(book) {
+  const box = $("#print");
+  const p = await api("GET", `/api/books/${book.id}/print`);
+  if (!p.available || !p.document) return box.remove();
+  const admin = Boolean(state.me.admin);
+  const orders = p.orders.length
+    ? `<h3>Your printed copies</h3><ul class="orders">${p.orders
+        .map(
+          (o) => `<li><strong>${o.status === "failed" ? "Not placed" : esc(PRINT_STATUS[o.luluStatus] || "Sent to the printer")}</strong>
+            <span class="muted">· ordered ${when(o.created_at)} · to ${esc(o.shipTo.name)}, ${esc(o.shipTo.city)}, ${esc(o.shipTo.state_code)} · ${money(o.priceCents)}</span>
+            ${o.status === "failed" ? `<br /><span class="muted small">${esc(o.error)} The money went back to your balance.</span>` : ""}
+            ${o.tracking.length ? `<br /><a href="${esc(o.tracking[0])}" target="_blank" rel="noopener">Track the parcel</a>` : ""}
+            ${admin && o.luluJobId ? `<br /><span class="muted small">Admin: Lulu sandbox job ${esc(o.luluJobId)}, status ${esc(o.luluStatus)}; our cost ${money(o.cost?.luluCents || 0)}, Stripe ${money(o.cost?.stripeCents || 0)}, margin ${money(o.cost?.marginCents || 0)}</span>` : ""}</li>`
+        )
+        .join("")}</ul>`
+    : "";
+  const head = `<h2>Order a printed copy</h2>
+    <p class="muted">An 11 × 8.5 inch hardcover, printed exactly like the PDF above and mailed to your door. <strong>${money(p.priceCents)}</strong>, standard shipping in the US included.</p>`;
+
+  if (!p.printLayout) {
+    box.innerHTML = `${head}${orders}
+      <p>This book was made before printed copies were available. Update it to the printed-book layout first (a copyright page, the story from the next page on, and About Me on the back cover). It uses the same pictures and is free.</p>
+      <button class="primary" id="relayout">Update to the printed-book layout</button> <p class="error" id="printError"></p>`;
+    $("#relayout").addEventListener("click", async (e) => {
+      e.target.disabled = true;
+      e.target.textContent = "Updating…";
+      try {
+        await api("POST", `/api/books/${book.id}/print-layout`);
+        bookPage(book.id);
+      } catch (err) {
+        $("#printError").textContent = err.message;
+        e.target.disabled = false;
+      }
+    });
+    return;
+  }
+
+  if (!p.approved) {
+    box.innerHTML = `${head}${orders}
+      <h3>Step 1 of 2: look through the PDF</h3>
+      <p>Nothing is printed until you approve it. Read every page in the viewer above (or <a href="${p.document.url}?inline=1" target="_blank" rel="noopener" id="openPdf">open the PDF in a new tab</a>): the cover, the copyright page, all 20 story pages and the About Me back cover.</p>
+      ${p.detailsChanged ? `<p class="error">The About Me details changed since you approved, so the PDF needs a new look and approval.</p>` : ""}
+      <label class="check"><input type="checkbox" id="approveBox" /> I looked through all ${p.document.pages} pages. Print the book exactly like this.</label>
+      <button class="primary" id="approveBtn" disabled>Approve for printing</button>
+      <div class="error" id="printError"></div>`;
+    $("#approveBox").addEventListener("change", (e) => ($("#approveBtn").disabled = !e.target.checked));
+    $("#approveBtn").addEventListener("click", async (e) => {
+      e.target.disabled = true;
+      e.target.textContent = "Checking the details…";
+      try {
+        await api("POST", `/api/books/${book.id}/approve`, { json: { approve: true, documentId: p.document.id } });
+        printSection(book);
+      } catch (err) {
+        $("#printError").innerHTML = err.data?.problems
+          ? `This can't be printed yet:<ul>${err.data.problems.map((x) => `<li>${esc(x.message)}</li>`).join("")}</ul>Change the details on the book's page, then make it again.`
+          : esc(err.message);
+        e.target.textContent = "Approve for printing";
+        e.target.disabled = !$("#approveBox").checked;
+      }
+    });
+    return;
+  }
+
+  const a = { name: state.me.name || "", ...readAddr() };
+  box.innerHTML = `${head}${orders}
+    <p class="ok-line">✓ You approved this PDF for printing ${when(p.approved.at)}. <button class="link" id="unapprove">Undo</button></p>
+    <h3>Step 2 of 2: where should it go?</h3>
+    <form id="shipForm" class="fields" novalidate>
+      <label class="wide">Full name <input name="name" autocomplete="name" maxlength="80" required value="${esc(a.name)}" /></label>
+      <label class="wide">Street address <input name="street1" autocomplete="address-line1" maxlength="100" required value="${esc(a.street1 || "")}" /></label>
+      <label class="wide">Apartment, suite <span class="hint">Optional</span><input name="street2" autocomplete="address-line2" maxlength="100" value="${esc(a.street2 || "")}" /></label>
+      <label>City <input name="city" autocomplete="address-level2" maxlength="60" required value="${esc(a.city || "")}" /></label>
+      <label>State <select name="state_code" autocomplete="address-level1" required><option value="">Choose…</option>${US_STATES.map((s) => `<option${a.state_code === s ? " selected" : ""}>${s}</option>`).join("")}</select></label>
+      <label>ZIP code <input name="postcode" autocomplete="postal-code" inputmode="numeric" maxlength="10" required value="${esc(a.postcode || "")}" /></label>
+      <label>Phone <span class="hint">For the delivery company only</span><input name="phone_number" type="tel" autocomplete="tel" maxlength="20" required value="${esc(a.phone_number || "")}" /></label>
+      <fieldset class="wide ship"><legend>Shipping</legend>${p.shipping
+        .map((s, i) => `<label class="check"><input type="radio" name="level" value="${s.id}"${i === 0 ? " checked" : ""} /> ${esc(s.label)}${s.included ? " · included" : ""}</label>`)
+        .join("")}</fieldset>
+      <p class="muted small wide">We ship in the United States only.</p>
+      <div class="wide row"><button class="primary" id="quoteBtn">See the total</button></div>
+    </form>
+    <div id="quoteOut"></div>
+    <div class="error" id="printError"></div>`;
+
+  $("#unapprove").addEventListener("click", async () => {
+    await api("POST", `/api/books/${book.id}/approve`, { json: { approve: false } });
+    printSection(book);
+  });
+  const form = $("#shipForm");
+  const address = () => {
+    const f = new FormData(form);
+    return Object.fromEntries(["name", "street1", "street2", "city", "state_code", "postcode", "phone_number"].map((k) => [k, String(f.get(k) || "").trim()]));
+  };
+  const level = () => new FormData(form).get("level");
+  form.addEventListener("input", (e) => {
+    e.target.removeAttribute("aria-invalid");
+    $("#quoteOut").innerHTML = "";
+  });
+  const showProblems = (err) => {
+    $("#printError").innerHTML = err.data?.needFunds ? `${esc(err.message)} <a href="#/account">Add funds</a>` : esc(err.message);
+    (err.data?.problems || []).forEach((x) => form.elements[x.field]?.setAttribute("aria-invalid", "true"));
+  };
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    $("#printError").textContent = "";
+    $("#quoteBtn").disabled = true;
+    $("#quoteBtn").textContent = "Asking the printer…";
+    try {
+      const q = await api("POST", `/api/books/${book.id}/print-quote`, { json: { address: address(), shippingLevel: level() } });
+      saveAddr(address());
+      const ad = address();
+      $("#quoteOut").innerHTML = `<div class="quote">
+          <p class="big-price">${money(q.priceCents)}</p>
+          <p>A hardcover of <em>${esc(book.storyTitle)}, starring ${esc(book.child_name)}</em>, shipped to ${esc(ad.name)}, ${esc(ad.street1)}${ad.street2 ? ", " + esc(ad.street2) : ""}, ${esc(ad.city)}, ${esc(ad.state_code)} ${esc(ad.postcode)}.
+          ${q.extraShippingCents ? `Includes ${money(q.extraShippingCents)} for faster shipping.` : "Standard shipping included."}
+          It's paid from your balance (${money(state.me.balance)}).</p>
+          ${state.me.balance < q.priceCents ? `<p class="error">That's ${money(q.priceCents - state.me.balance)} more than your balance. <a href="#/account">Add funds</a>, then come back to this book.</p>` : ""}
+          ${admin && q.cost ? `<p class="muted small">Admin: Lulu charges us ${money(q.cost.luluCents)} (print, shipping, fulfillment, tax), Stripe keeps about ${money(q.cost.stripeCents)}, margin ${money(q.cost.marginCents)}.</p>` : ""}
+          <button class="primary big" id="orderBtn">Place the order for ${money(q.priceCents)}</button>
+        </div>`;
+      $("#orderBtn").addEventListener("click", async (ev) => {
+        ev.target.disabled = true;
+        ev.target.textContent = "Sending it to the printer…";
+        $("#printError").textContent = "";
+        try {
+          const out = await api("POST", `/api/books/${book.id}/print-order`, { json: { address: address(), shippingLevel: level(), expectedPriceCents: q.priceCents } });
+          state.me.balance = out.balance;
+          $("#balanceChip").textContent = money(out.balance);
+          toast("Your book is on its way to the printer");
+          printSection(book);
+        } catch (err) {
+          showProblems(err);
+          ev.target.disabled = false;
+          ev.target.textContent = `Place the order for ${money(q.priceCents)}`;
+        }
+      });
+    } catch (err) {
+      showProblems(err);
+    } finally {
+      $("#quoteBtn").disabled = false;
+      $("#quoteBtn").textContent = "See the total";
+    }
+  });
 }
 
 // ------------------------------------------------------------------ account
@@ -563,7 +750,7 @@ async function account(query = "") {
   if (params.get("funded") > 0) toast(`${money(Number(params.get("funded")))} added to your balance`);
   if (params.has("funded") || params.has("then")) history.replaceState(null, "", "#/account");
   const resume = read("resume-book");
-  const kindWords = { topup: "Funds added", document: "Book made", refund: "Refund", auto_refund: "Returned to balance" };
+  const kindWords = { topup: "Funds added", document: "Book made", print_order: "Printed book ordered", refund: "Refund", auto_refund: "Returned to balance" };
   // Testing tools (test card hint, refunds) and business numbers (cost per book) are for the
   // site's admins only; customers never see them.
   const admin = Boolean(state.me.admin);
