@@ -8,6 +8,12 @@ import { registerAuth, requireUser, loginConfigured } from "./lib/auth.js";
 import { hasKey, setUsageRecorder } from "./lib/openai.js";
 import { sniffMime } from "./lib/images.js";
 import * as stripe from "./lib/stripe.js";
+import { validateDetails, detailsHash } from "./lib/validate.js";
+import * as lulu from "./lib/lulu.js";
+import { priceFor, SHIPPING, PRINT_PRICE_CENTS } from "./lib/pricing.js";
+import { sign, verify } from "./lib/session.js";
+import { rebuildReadingPdf, buildPrintFiles, READING_PAGES } from "./book/print.js";
+import { coverLayout as coverLayoutFor } from "./book/pdf.js";
 import { STORIES, STORY_IDS } from "./book/stories.js";
 import { TEMPLATE, LAYOUTS } from "./book/template.js";
 import { createPipeline, PRICE_CENTS } from "./book/pipeline.js";
@@ -213,6 +219,31 @@ app.post("/api/books/:id/photo", requireUser, requirePassword, async (req, res) 
   res.json({ heroJob: pipeline.heroJob(book.id) });
 });
 
+// The About Me details are checked (rules, moderation, a name check) before anything is drawn,
+// charged or printed. A passing check is remembered by a hash of the details, so editing them re-checks.
+async function requireCleanDetails(book, user) {
+  const hash = detailsHash(book);
+  if (book.details_ok === hash) return;
+  const result = await validateDetails(book, { bookId: book.id, userId: user.id });
+  await store.logEvent({ userId: user.id, bookId: book.id, type: result.ok ? "details_ok" : "details_rejected", detail: { by: result.by, problems: result.problems } });
+  if (!result.ok) {
+    throw new HttpError(422, result.problems.map((p) => p.message).join(" "), { extra: { problems: result.problems } });
+  }
+  await store.setDetailsOk(book.id, hash);
+  book.details_ok = hash;
+}
+
+app.post("/api/books/:id/check-details", requireUser, async (req, res) => {
+  const book = await loadBook(req);
+  try {
+    await requireCleanDetails(book, req.user);
+    res.json({ ok: true });
+  } catch (err) {
+    if (err.status === 422) return res.status(422).json({ ok: false, error: err.message, problems: err.extra.problems });
+    throw err;
+  }
+});
+
 // Make the book: charge $0.99, then run the pipeline. Progress via /progress.
 app.post("/api/books/:id/generate", requireUser, requirePassword, async (req, res) => {
   const book = await loadBook(req);
@@ -220,6 +251,7 @@ app.post("/api/books/:id/generate", requireUser, requirePassword, async (req, re
   if (!story) throw new HttpError(400, "This is an older book; start a new one.");
   if (pipeline.isRunning(book.id)) throw new HttpError(409, "This book is already being made.");
   if (!book.child_name) throw new HttpError(400, "Enter the child's name first.");
+  await requireCleanDetails(book, req.user);
   if (!(await pipeline.storyReady(book.story))) throw new HttpError(503, "This story's scenes are still being prepared. Try again soon.");
   const hj = pipeline.heroJob(book.id);
   const hasHero = await store.getImageData(book.id, "hero", "");
@@ -260,6 +292,270 @@ app.get("/api/documents/:id", requireUser, async (req, res) => {
     .send(doc.data);
   store.logEvent({ userId: req.user.id, bookId: null, type: "pdf_downloaded", detail: { documentId: doc.id } }).catch(() => {});
 });
+
+// ------------------------------------------------------------------ print and ship (Lulu SANDBOX)
+// 1. The parent reads the PDF and approves it (nothing can be ordered before that).
+// 2. They type the delivery address and pick shipping; we ask Lulu what it costs and show our price.
+// 3. They place the order: we build the print files (interior + cover spread), take the price from
+//    their balance, and create the print job in Lulu's sandbox. If Lulu says no, the money goes back.
+
+const latestBookDoc = async (user, book) => (await store.listDocuments(user.id, book.id))[0] || null;
+
+async function printState(user, book) {
+  const doc = await latestBookDoc(user, book);
+  const approval = book.approval || null;
+  const approvedOk =
+    approval && doc && approval.documentId === doc.id && approval.details === detailsHash(book) && book.details_ok === approval.details;
+  const orders = await store.listOrders(user.id, book.id);
+  return {
+    available: lulu.configured(),
+    sandbox: lulu.isSandbox(),
+    printLayout: Boolean(doc && doc.pages === READING_PAGES),
+    document: doc ? { id: doc.id, url: `/api/documents/${doc.id}`, pages: doc.pages } : null,
+    approved: approvedOk ? { at: approval.at } : null,
+    detailsChanged: Boolean(approval && approval.details !== detailsHash(book)),
+    priceCents: PRINT_PRICE_CENTS,
+    shipping: Object.entries(SHIPPING).map(([id, s]) => ({ id, ...s })),
+    orders: orders.map((o) => orderJson(o, user)),
+  };
+}
+
+function orderJson(o, user) {
+  return {
+    id: o.id,
+    status: o.status,
+    luluStatus: o.lulu_status,
+    luluJobId: o.lulu_job_id,
+    shippingLevel: o.shipping_level,
+    shipTo: { name: o.address.name, city: o.address.city, state_code: o.address.state_code, postcode: o.address.postcode },
+    priceCents: o.price_cents,
+    error: o.error,
+    tracking: (o.lulu?.line_items || []).flatMap((li) => li.tracking_urls || li.tracking_id || []).filter(Boolean),
+    created_at: o.created_at,
+    cost: isAdmin(user) ? o.cost : undefined, // our cost and margin: admins only
+  };
+}
+
+const readyBook = async (req) => {
+  const book = await loadBook(req);
+  if (book.status !== "ready") throw new HttpError(400, "Finish the book first.");
+  return book;
+};
+
+app.get("/api/books/:id/print", requireUser, async (req, res) => {
+  const book = await loadBook(req);
+  const state = await printState(req.user, book);
+  // Lulu status changes slowly; check open orders at most once a minute.
+  for (const o of await store.listOrders(req.user.id, book.id)) {
+    const done = ["SHIPPED", "REJECTED", "CANCELED"].includes(o.lulu_status);
+    if (o.lulu_job_id && !done && (!o.checked_at || Date.now() - new Date(o.checked_at) > 60_000)) {
+      try {
+        const job = await lulu.getPrintJob(o.lulu_job_id);
+        await store.updateOrder(o.id, { lulu_status: job.status?.name || o.lulu_status, lulu: job, checked_at: new Date() });
+      } catch (err) {
+        logger.warn("lulu status failed", { order: o.id, error: err.message });
+        await store.updateOrder(o.id, { checked_at: new Date() });
+      }
+    }
+  }
+  state.orders = (await store.listOrders(req.user.id, book.id)).map((o) => orderJson(o, req.user));
+  res.json(state);
+});
+
+// A book made before printing existed gets the print layout (copyright page etc.) without redrawing.
+app.post("/api/books/:id/print-layout", requireUser, async (req, res) => {
+  const book = await readyBook(req);
+  const doc = await rebuildReadingPdf(store, book);
+  await store.setApproval(book.id, null);
+  await store.logEvent({ userId: req.user.id, bookId: book.id, type: "pdf_rebuilt", detail: { documentId: doc.id } });
+  res.json(await printState(req.user, await loadBook(req)));
+});
+
+app.post("/api/books/:id/approve", requireUser, async (req, res) => {
+  const book = await readyBook(req);
+  const body = await jsonBody(req);
+  const doc = await latestBookDoc(req.user, book);
+  if (!doc || doc.pages !== READING_PAGES) throw new HttpError(400, "Update this book to the print layout first.");
+  if (body.approve !== true) {
+    await store.setApproval(book.id, null);
+    return res.json(await printState(req.user, book));
+  }
+  if (Number(body.documentId) !== doc.id) throw new HttpError(409, "There's a newer PDF of this book. Look through that one first.");
+  // The details on the covers are checked again (rules, moderation, real name) before approval.
+  await requireCleanDetails(book, req.user);
+  await store.setApproval(book.id, { at: new Date().toISOString(), documentId: doc.id, details: detailsHash(book) });
+  await store.logEvent({ userId: req.user.id, bookId: book.id, type: "print_approved", detail: { documentId: doc.id } });
+  res.json(await printState(req.user, await loadBook(req)));
+});
+
+const US_STATES = new Set("AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY PR".split(" "));
+
+function cleanAddress(a = {}, user) {
+  const t = (v, max) => String(v ?? "").trim().replace(/\s+/g, " ").slice(0, max);
+  const out = {
+    name: t(a.name, 80),
+    street1: t(a.street1, 100),
+    street2: t(a.street2, 100),
+    city: t(a.city, 60),
+    state_code: t(a.state_code, 2).toUpperCase(),
+    postcode: t(a.postcode, 10),
+    country_code: "US",
+    phone_number: t(a.phone_number, 20),
+    email: user.email,
+  };
+  const problems = [];
+  if (out.name.length < 2) problems.push({ field: "name", message: "Enter who the book is going to." });
+  if (out.street1.length < 3) problems.push({ field: "street1", message: "Enter the street address." });
+  if (out.city.length < 2) problems.push({ field: "city", message: "Enter the city." });
+  if (!US_STATES.has(out.state_code)) problems.push({ field: "state_code", message: "Choose the state." });
+  if (!/^\d{5}(-\d{4})?$/.test(out.postcode)) problems.push({ field: "postcode", message: "Enter a 5-digit ZIP code." });
+  if (out.phone_number.replace(/\D/g, "").length < 10) problems.push({ field: "phone_number", message: "Enter a phone number for the delivery company." });
+  if (problems.length) throw new HttpError(400, problems.map((p) => p.message).join(" "), { extra: { problems } });
+  return out;
+}
+
+async function quoteFor(address, level) {
+  if (!SHIPPING[level]) throw new HttpError(400, "Choose a shipping speed.");
+  const standard = await lulu.quote({ address, shippingLevel: "MAIL" });
+  const chosen = level === "MAIL" ? standard : await lulu.quote({ address, shippingLevel: level });
+  return { ...priceFor({ standard, chosen, level }), lulu: chosen };
+}
+
+app.post("/api/books/:id/print-quote", requireUser, async (req, res) => {
+  const book = await readyBook(req);
+  const body = await jsonBody(req);
+  const address = cleanAddress(body.address, req.user);
+  const q = await quoteFor(address, body.shippingLevel || "MAIL");
+  const admin = isAdmin(req.user);
+  res.json({
+    priceCents: q.priceCents,
+    extraShippingCents: q.extraShippingCents,
+    // our cost and margin are for admins only
+    cost: admin ? { luluCents: q.luluCents, stripeCents: q.stripeCents, marginCents: q.marginCents, lulu: q.lulu } : undefined,
+    book: book.id,
+  });
+});
+
+const printUrl = (req, docId) => {
+  const token = sign({ purpose: "print", doc: docId, exp: Date.now() + 7 * 24 * 3600 * 1000 });
+  const base = (process.env.PUBLIC_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
+  return `${base}/print-files/${token}.pdf`;
+};
+
+// Lulu downloads the print files from here: a signed link that expires in a week, no sign-in.
+app.get("/print-files/:token", async (req, res) => {
+  const payload = verify(String(req.params.token).replace(/\.pdf$/, ""));
+  if (!payload || payload.purpose !== "print") return res.status(404).end();
+  const doc = await store.getDocumentById(payload.doc);
+  if (!doc || !doc.kind.startsWith("print_")) return res.status(404).end();
+  res.set("Content-Type", "application/pdf").set("Cache-Control", "private, max-age=3600").send(doc.data);
+});
+
+app.post("/api/books/:id/print-order", requireUser, async (req, res) => {
+  const book = await readyBook(req);
+  const body = await jsonBody(req);
+  const state = await printState(req.user, book);
+  if (!state.approved) throw new HttpError(400, "Look through the PDF and approve it first. Nothing is printed before that.");
+  if (!lulu.isSandbox()) throw new HttpError(503, "Printing runs in Lulu's sandbox only.");
+  const level = body.shippingLevel || "MAIL";
+  const address = cleanAddress(body.address, req.user);
+  const q = await quoteFor(address, level);
+  if (Number(body.expectedPriceCents) !== q.priceCents) {
+    throw new HttpError(409, `The price for this address is now ${money(q.priceCents)}. Check it and place the order again.`, {
+      extra: { priceCents: q.priceCents },
+    });
+  }
+  const dims = await lulu.coverDimensions(24);
+  const files = await buildPrintFiles(store, book, dims);
+  let charge;
+  try {
+    charge = await store.charge(req.user.id, q.priceCents, {
+      kind: "print_order",
+      description: `Printed hardcover: "${files.title}", shipped to ${address.city}, ${address.state_code}`,
+      book_id: book.id,
+    });
+  } catch (err) {
+    if (err instanceof InsufficientFunds) {
+      throw new HttpError(402, `The printed book is ${money(q.priceCents)} and your balance is ${money(err.balance)}. Add funds first.`, {
+        extra: { needFunds: true, balance: err.balance },
+      });
+    }
+    throw err;
+  }
+  const order = await store.createOrder({
+    userId: req.user.id,
+    bookId: book.id,
+    shippingLevel: level,
+    address,
+    priceCents: q.priceCents,
+    cost: { luluCents: q.luluCents, stripeCents: q.stripeCents, marginCents: q.marginCents, dims, lulu: q.lulu.raw },
+    ledgerId: charge.id,
+    interiorDocId: files.interiorId,
+    coverDocId: files.coverId,
+  });
+  try {
+    const job = await lulu.createPrintJob({
+      externalId: `beanstalk-order-${order.id}`,
+      title: files.title,
+      interiorUrl: printUrl(req, files.interiorId),
+      coverUrl: printUrl(req, files.coverId),
+      address,
+      shippingLevel: level,
+      contactEmail: process.env.LULU_CONTACT_EMAIL || req.user.email,
+    });
+    await store.updateOrder(order.id, { status: "placed", lulu_job_id: String(job.id), lulu_status: job.status?.name || "CREATED", lulu: job, checked_at: new Date() });
+    await store.logEvent({ userId: req.user.id, bookId: book.id, type: "print_ordered", detail: { order: order.id, luluJob: job.id, priceCents: q.priceCents } });
+  } catch (err) {
+    // Lulu said no: nothing will be printed, so the money goes straight back.
+    await store.credit(req.user.id, q.priceCents, {
+      kind: "auto_refund",
+      description: `Print order didn't go through, refunded: "${files.title}"`,
+      book_id: book.id,
+      ref: `print-order-${order.id}`,
+    });
+    await store.updateOrder(order.id, { status: "failed", error: err.message });
+    logger.error("print order failed", { order: order.id, error: err.message });
+    throw new HttpError(502, `The printer didn't accept the order, so the money is back in your balance: ${err.message}`);
+  }
+  const me = await store.getUser(req.user.id);
+  res.json({ ...(await printState(req.user, await loadBook(req))), balance: me.balance_cents });
+});
+
+// Admin: check our print files with Lulu's own validators, and see a quote with our cost.
+app.post("/api/admin/print-check/:id", requireUser, requireAdmin, async (req, res) => {
+  const { rows } = await store.q("SELECT * FROM books WHERE id = $1", [Number(req.params.id)]);
+  const book = rows[0];
+  if (!book) throw new HttpError(404, "No such book.");
+  const dims = await lulu.coverDimensions(24);
+  const files = await buildPrintFiles(store, book, dims);
+  const interior = await lulu.validateInterior(printUrl(req, files.interiorId));
+  const cover = await lulu.validateCover(printUrl(req, files.coverId), 24);
+  res.json({ dims, layout: files.layout, interior, cover, interiorUrl: printUrl(req, files.interiorId), coverUrl: printUrl(req, files.coverId) });
+});
+
+app.get("/api/admin/print-check/:kind/:vid", requireUser, requireAdmin, async (req, res) => {
+  const id = Number(req.params.vid);
+  res.json(req.params.kind === "cover" ? await lulu.getCoverValidation(id) : await lulu.getInteriorValidation(id));
+});
+
+// GET works too, so an admin can open it in the browser: /api/admin/print-quote
+app.get("/api/admin/print-quote", requireUser, requireAdmin, async (req, res) => printQuoteAll(req, res, {}));
+app.post("/api/admin/print-quote", requireUser, requireAdmin, async (req, res) => printQuoteAll(req, res, await jsonBody(req)));
+async function printQuoteAll(req, res, body) {
+  const address = cleanAddress(
+    body.address || { name: "Test Parent", street1: "1600 Pennsylvania Ave NW", city: "Washington", state_code: "DC", postcode: "20500", phone_number: "2025550123" },
+    req.user
+  );
+  const out = {};
+  for (const level of Object.keys(SHIPPING)) out[level] = await quoteFor(address, level).catch((e) => ({ error: e.message }));
+  let cover = null;
+  try {
+    cover = coverLayoutFor(await lulu.coverDimensions(24));
+  } catch (e) {
+    cover = { error: e.message };
+  }
+  res.json({ podPackageId: lulu.POD_PACKAGE_ID(), sandbox: lulu.isSandbox(), address, cover, quotes: out });
+}
 
 app.get("/api/activity", requireUser, async (req, res) => res.json(await store.recentEvents(req.user.id, 60)));
 
