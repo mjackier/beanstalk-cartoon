@@ -113,11 +113,18 @@ on fixed costs (domain, Render) is a handful of books a month.
   refused, quote, stale price refused, 402 without enough balance, Lulu refusal refunds, order placed,
   charged once, print files download without sign-in and a tampered link is refused, editing the details
   cancels the approval). A Playwright run clicks the whole flow as a customer.
-- Live against Lulu's sandbox: LIVE_RESULTS
+- Live on beanstalk.jackier.xyz against Lulu's sandbox (review-log.md run 3, 13 Nov 2026): Little Red made
+  in 41 s and Jack in 26 s from a new photo; both PDFs 26 pages in the real-book order. "I hate school" in
+  About Me was refused before anything was charged (since loosened, see to-do). The printed copy was refused
+  at a $3.02 balance (402, "Add funds first"), then approved, quoted at $39.99 and ordered: Lulu sandbox
+  **Print Job #363851** ("beanstalk-order-1") went from CREATED to UNPAID within two minutes, which means
+  Lulu downloaded both print files and accepted them. Balance trail 0 → 5 → 4.01 → 3.02 → 23.02 → 43.02 →
+  42.02 (refund) → 2.03 (print order). The storybook-review score is 99/100 (run 3).
 
 ## Links
 
 - Live site: https://beanstalk.jackier.xyz
 - Repo: https://github.com/mjackier/beanstalk-cartoon
-- A PDF the app produced: SAMPLE_PDF
+- PDFs the app produced (run 3): [Jack and the Beanstalk, starring Mattan](samples/Jack-and-the-Beanstalk-starring-Mattan.pdf) ·
+  [Little Red Riding Hood, starring Mattan](samples/Little-Red-Riding-Hood-starring-Mattan.pdf)
 - [to-do.md](to-do.md) · [review-log.md](review-log.md)
