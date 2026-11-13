@@ -736,13 +736,13 @@ app.post("/api/admin/pregen", requireUser, requireAdmin, async (req, res) => {
 app.get("/api/admin/characters/:story/:key", requireUser, requireAdmin, async (req, res) => {
   const c = await store.getCharacterImage(req.params.story, req.params.key, req.query.full !== "1");
   if (!c) return res.status(404).end();
-  res.set("Content-Type", "image/jpeg").set("Cache-Control", "private, no-store") // a signed-out browser must not keep serving it from cache.send(c.data);
+  res.set("Content-Type", "image/jpeg").set("Cache-Control", "private, max-age=86400").send(c.data);
 });
 
 app.get("/api/admin/scenes/:story/:n", requireUser, requireAdmin, async (req, res) => {
   const s = await store.getScene(req.params.story, Number(req.params.n), req.query.full !== "1");
   if (!s) return res.status(404).end();
-  res.set("Content-Type", "image/jpeg").set("Cache-Control", "private, no-store") // a signed-out browser must not keep serving it from cache.send(s.data);
+  res.set("Content-Type", "image/jpeg").set("Cache-Control", "private, max-age=86400").send(s.data);
 });
 
 // Admin test book: same pipeline, made from the survey photo, not charged (it costs only OpenAI money).
