@@ -1,6 +1,18 @@
 # To-do
 
-What still needs work in the storybook (homework 4: 20 pages, two stories, one template, Stripe).
+What still needs work in the storybook (homework 5: print it and ship it, on top of homework 4's 20 pages, two stories, one template, Stripe).
+
+## Print it and ship it (homework 5)
+- [x] The book looks like a real book: front cover "<Title>", "starring <Name>"; page 1 is the copyright notice and publisher; the story starts on the next page; About Me is the back cover.
+- [x] 11 x 8.5 in landscape hardcover (Lulu casewrap, 24 interior pages): the 20 story pages plus copyright, The End, a page to draw on and a dedication.
+- [x] Print files: interior with 0.125 in bleed on every side, and one cover spread (back, spine, front) sized from Lulu's /cover-dimensions/.
+- [x] About Me details are checked before anything is drawn, charged or printed: rules (letters only, age 17 or under, no links/emails/phone numbers, obvious insults), OpenAI moderation, and a real-name check that rejects insults and epithets. If a check can't run, nothing goes ahead.
+- [x] Nothing is ordered before the parent approves the PDF. Changing the details afterwards cancels the approval.
+- [x] Address form (US only), shipping speed, live price from Lulu's cost API, order paid from the balance, print job created in Lulu's SANDBOX. If Lulu refuses, the money goes back.
+- [x] Books made before this get a free "update to the printed-book layout" (same pictures, no new drawing).
+- [ ] Lulu sandbox jobs stay "unpaid" until paid in the sandbox portal; nothing is actually printed (by design: sandbox only).
+- [ ] International shipping (US only for now).
+- [ ] A spine title (Lulu only allows spine text from 80 pages; ours has 24).
 
 ## From my review of the first real book (Jack, 52 seconds)
 - [x] Page 3: Jack was holding the rope behind him instead of in front of him. Redrew the scene.
