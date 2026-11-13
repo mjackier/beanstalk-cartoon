@@ -465,6 +465,13 @@ app.post("/api/books/:id/print-order", requireUser, async (req, res) => {
       extra: { priceCents: q.priceCents },
     });
   }
+  // Say "add funds" before spending time building print files.
+  const me0 = await store.getUser(req.user.id);
+  if (me0.balance_cents < q.priceCents) {
+    throw new HttpError(402, `The printed book is ${money(q.priceCents)} and your balance is ${money(me0.balance_cents)}. Add funds first.`, {
+      extra: { needFunds: true, balance: me0.balance_cents },
+    });
+  }
   const dims = await lulu.coverDimensions(24);
   const files = await buildPrintFiles(store, book, dims);
   let charge;
